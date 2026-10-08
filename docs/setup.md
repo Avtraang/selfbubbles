@@ -209,10 +209,12 @@ venv/bin/python relay.py --check
 
 A few harmless lines come first: `[auth] token required`, a
 `DeprecationWarning: on_event is deprecated` block from FastAPI, and
-`[engines] send chain: applescript; features: (none)` (plus a `[self]` line
-if you set `IMSG_SELF`). Then it prints one row per dependency (status
-words, the address it binds and two paths, never a secret) and exits without
-starting the server. On a first run the top row is expected to be
+`[engines] send chain: applescript; features: (none)` (plus a `[self]` line if
+you set `IMSG_SELF`; the chain reads `applescript, imessage-cli` on a Mac that
+already has Beeper's `imessage-cli`, the edit tool of 5.7). Then it prints one
+row per dependency (status words, the address it binds and two paths, never a
+secret) and exits without starting the server. On a first run the top row is
+expected to be
 
 ```
 chat.db   NOT READABLE (...)   grant Full Disk Access to /Users/you/selfbubbles-relay/venv/bin/python (resolves to /path/to/python3.x) in System Settings > Privacy & Security, then restart the relay
@@ -253,31 +255,35 @@ BlueBubbles, Beeper or anything optional prints, after the lines described in
 
 ```
 [check] relay doctor
-  component                 status                                                         hint
-  ------------------------  -------------------------------------------------------------  ----
+  component                 status                                                                hint
+  ------------------------  --------------------------------------------------------------------  ----
   chat.db                   readable
   token (IMSG_TOKEN)        set
   listening on              127.0.0.1:8700
-  BlueBubbles               no password (AppleScript only), server unreachable             set BB_PASSWORD for tapbacks, replies, new chats, group icons, names and FaceTime
-  Beeper (Google Messages)  disabled                                                       set BEEPER_TOKEN to merge Google Messages threads
-  FCM push                  disabled                                                       set FCM_CREDS to a Firebase service-account JSON for push notifications
-  Home Assistant            disabled                                                       set HA_TOKEN and HA_LOCATIONS for the family map
-  MapKit                    not set                                                        set MAPKIT_TOKEN to serve the /map page
-  translation               marian unreachable, ollama unreachable (OLLAMA_MODEL default)  /translate will fail until MARIAN_URL or OLLAMA_URL answers
+  BlueBubbles               no password (AppleScript only), server unreachable                    set BB_PASSWORD for tapbacks, replies, new chats, group icons, names and FaceTime
+  Beeper (Google Messages)  disabled                                                              set BEEPER_TOKEN to merge Google Messages threads
+  FCM push                  disabled                                                              set FCM_CREDS to a Firebase service-account JSON for push notifications
+  Home Assistant            disabled                                                              set HA_TOKEN and HA_LOCATIONS for the family map
+  MapKit                    not set                                                               set MAPKIT_TOKEN to serve the /map page
+  translation               marian unreachable, ollama unreachable (OLLAMA_MODEL default)         /translate will fail until MARIAN_URL or OLLAMA_URL answers
   send engines              applescript
-  features advertised       (none)                                                         FEATURE_FACETIME/MAP/TRANSLATE/VOICE override what /health reports
+  edit / unsend             edit: not available (imessage-cli not found) | unsend: not available  to edit sent messages: brew install beeper/tap/imessage-cli; unsend needs BlueBubbles with the Private API (BB_PASSWORD)
+  features advertised       (none)                                                                FEATURE_FACETIME/MAP/TRANSLATE/VOICE override what /health reports
   data dir                  /Users/you/selfbubbles-relay (writable)
-  FaceTime auto-admit       off (helper app missing), script found, helper app missing     off by construction: the rig needs the Accessibility-granted helper app named by FT_ADMIT_APP (owner-specific, never rebuilt)
+  FaceTime auto-admit       off (helper app missing), script found, helper app missing            off by construction: the rig needs the Accessibility-granted helper app named by FT_ADMIT_APP (owner-specific, never rebuilt)
 ```
 
 Read it as: the first two rows and `send engines` are what texting needs
 (`readable`, `set`, and at least one engine). `listening on` is where the
 relay answers: `127.0.0.1:8700` with the `.env` from 1.2, while
 `0.0.0.0:8700` would mean every network interface of the Mac, with a hint
-that says how to change it. Every "disabled", "not set" and "unreachable"
-below that is an optional extra you have not set up, and the hint names the
-key that would turn it on. The last row is the author's own FaceTime rig,
-which a fresh checkout cannot turn on; ignore it.
+that says how to change it. Every "disabled", "not set", "not available" and
+"unreachable" below that is an optional extra you have not set up, and the
+hint names the key (for `edit / unsend`, the tool) that would turn it on. On
+a Mac that already has Beeper's `imessage-cli`, that row starts `edit:
+imessage-cli <version> found` and `send engines` reads `applescript,
+imessage-cli` (5.7). The last row is the author's own FaceTime rig, which a
+fresh checkout cannot turn on; ignore it.
 
 If `send engines` ever reads `NONE`, every send will fail with a 501. It means
 no engine is configured: you set `SEND_APPLESCRIPT_FALLBACK=0` without a
@@ -296,13 +302,23 @@ without the extras, three lines that look like errors are not: `[fcm]
 FCM_CREDS not set — push notifications disabled`, `[beeper] disabled (no
 BEEPER_TOKEN)` and `[contacts] BB_PASSWORD not set in the relay's env — names
 won't resolve; sends go out over AppleScript. Set BB_PASSWORD and restart the
-relay.` If the macOS firewall asks whether Python may accept incoming
-connections, either answer works for this walkthrough: both routes in step 2
-reach the relay over loopback.
+relay.` The very first start also prints `[reads] baseline initialized at
+ROWID …` and two `[poll] initialized …` lines: the relay noting where in the
+database it begins. If the macOS firewall asks whether Python may accept
+incoming connections, either answer works for this walkthrough: both routes in
+step 2 reach the relay over loopback.
 
 If you get a traceback and "Application startup failed" instead of "Uvicorn
 running", the relay could not read `chat.db`: this run is judged by the
 terminal's grant (1.3).
+
+If it prints the table, then `ERROR:    [Errno 48] error while attempting to
+bind on address ('127.0.0.1', 8700): address already in use`, and exits,
+another program has the port (a relay you already started counts). Stop that
+program, or set `IMSG_PORT` in `.env` to a free port: from then on that number
+replaces every `8700` this guide writes (the `curl` checks, `tailscale serve
+--bg`, the tunnel's service address in Recipe B, the BlueBubbles webhook in
+5.1).
 
 If it stops instead with no table and exit status 78, after its one-line
 `[auth]` status (`[auth] IMSG_TOKEN IS A PLACEHOLDER — …` or
@@ -488,9 +504,11 @@ fronts the relay with a certificate from Let's Encrypt for a name under
    tailscale serve --bg 8700
    ```
 
-   With the App Store build of Tailscale the CLI is at
-   `/Applications/Tailscale.app/Contents/MacOS/Tailscale`; the open-source
-   build puts `tailscale` on your PATH.
+   With the Tailscale app from the Mac App Store or the standalone download
+   there is no `tailscale` on the PATH (`command not found`): run the binary
+   inside the app instead,
+   `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg 8700`.
+   Only the open-source build puts `tailscale` on your PATH.
 4. Find the URL:
 
    ```sh
@@ -501,17 +519,22 @@ fronts the relay with a certificate from Let's Encrypt for a name under
    `http://127.0.0.1:8700`. That `https://…ts.net` address is your **Relay
    URL** for step 3 and step 4. The certificate is issued by Let's Encrypt, so
    the phone trusts it with no extra step.
-5. Check from the Mac:
+5. Check from the Mac. Put the token from 1.2 into the shell first: after
+   the first line below, paste it and press Return (nothing is shown, and it
+   stays out of the shell history):
 
    ```sh
+   read -rs IMSG_TOKEN
    curl -s https://<mac-name>.<tailnet-name>.ts.net/health
    # {"ok":true}
-   curl -s -H "X-Imsg-Token: $YOUR_TOKEN" https://<mac-name>.<tailnet-name>.ts.net/health
-   # {"ok":true,"cursor":…,"contacts":0,"self":[…],"bb_reachable":false,"engines":["applescript"],"features":{…},"protocol":1}
+   curl -s -H "X-Imsg-Token: $IMSG_TOKEN" https://<mac-name>.<tailnet-name>.ts.net/health
+   # {"ok":true,"cursor":…,"contacts":0,"self":[…],"bb_reachable":false,"engines":["applescript"],"features":{…},"protocol":1,"capabilities":[…]}
    ```
 
    `/health` is the only path that answers without a token, and without one
-   it returns exactly `{"ok":true}`, whatever the query string. Nothing in
+   (or with a wrong or empty one) it returns exactly `{"ok":true}`, whatever
+   the query string: if the second command prints only that, the token did
+   not arrive. Nothing in
    the relay limits how often a token can be tried on the other paths, which
    is one more reason for the long random token from step 1.2.
 
@@ -565,8 +588,8 @@ is a second lock: without the service token's two headers Cloudflare answers
    `/health`. Through Cloudflare a bare `curl https://relay.example.com/health`
    returns **403**, and that 403 is the lock working. The relay never sees the
    request.
-6. **Check from the Mac** (export the three values into your shell first;
-   never paste them into a URL):
+6. **Check from the Mac** (put the three values into shell variables first,
+   each with `read -rs NAME` as in Recipe A; never paste them into a URL):
 
    ```sh
    curl -s -o /dev/null -w "%{http_code}\n" https://relay.example.com/health
@@ -575,7 +598,7 @@ is a second lock: without the service token's two headers Cloudflare answers
         https://relay.example.com/health
    # {"ok":true}   <- through Access, no relay token
    curl -s -H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET" \
-        -H "X-Imsg-Token: $YOUR_TOKEN" https://relay.example.com/health
+        -H "X-Imsg-Token: $IMSG_TOKEN" https://relay.example.com/health
    # the full JSON with "cursor", "engines", "features", "protocol"
    ```
 
@@ -630,7 +653,7 @@ until you fill something in; here is what each key does and what to put in it.
 | `CF_ACCESS_CLIENT_ID` | Recipe B only | The service token's Client ID (`….access`). | Printable ASCII. Set both CF keys or neither: the build does **not** check the pair, and with only one set the app sends no Access headers at all. Empty both for Recipe A. |
 | `CF_ACCESS_CLIENT_SECRET` | Recipe B only | The service token's Client Secret. | Same. |
 | `RELAY_REMOTE_BASE` | optional | `https://relay.example.com` or your `https://….ts.net` address, no trailing slash. | Must be `https://` with a host; no query string, user info or `#fragment`, or the build fails naming the key. Empty → asked on first run. |
-| `RELAY_REMOTE_WS` | optional | Leave it empty (`RELAY_REMOTE_WS=`) unless you need to spell it out as `wss://relay.example.com/ws`. | Empty is fine: the app derives `wss://<host>[:port]<path>/ws` from `RELAY_REMOTE_BASE` (the Gradle warning for it says so). If you set it, it must be `wss://` on the **same host and port** as the base, with no query string, or the build fails. |
+| `RELAY_REMOTE_WS` | optional | Leave it empty (`RELAY_REMOTE_WS=`) unless you need to spell it out as `wss://relay.example.com/ws`. | Empty is fine: the app derives `wss://<host>[:port]<path>/ws` from `RELAY_REMOTE_BASE` (the Gradle warning for it says so once `RELAY_REMOTE_BASE` is set). If you set it, it must be `wss://` on the **same host and port** as the base, with no query string, or the build fails. |
 | `FAMILY_MAP_URL` | optional | Empty (`FAMILY_MAP_URL=`), or `https://relay.example.com/map` once step 5.4 is done. | **Not** checked by the build. The app's Relay form refuses to save anything but an empty value or an `https://` URL with a host; a query string and `#fragment` are allowed here. Empty hides the Map button. |
 | `FEATURES` | optional, ships present and empty | A comma-separated subset of `facetime`, `map`, `translate`, `voice`, or nothing after the `=`. | See below; the line's presence matters as much as its value. |
 | `APP_LABEL` | optional, ships commented out | The launcher label, up to 30 characters. | Absent or empty → "SelfBubbles". It is also the chat-list title and the "Unlock …" prompt. One line; longer values are cut at 30 with a warning. |
@@ -693,6 +716,13 @@ JDK, like this:
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew help --console=plain
 ```
 
+`help` needs no Android SDK, but every build task does. Android Studio's sync
+in 3.1 writes where the SDK is into `local.properties` (git-ignored). If you
+skipped Studio, a build stops with `SDK location not found. Define a valid SDK
+location with an ANDROID_HOME environment variable or by setting the sdk.dir
+path in your project's local properties file`: set `ANDROID_HOME` (Studio
+installs the SDK in `~/Library/Android/sdk`) the same way as `JAVA_HOME`.
+
 The build tells you what it found in `secrets.properties`, but only in the
 configuration phase, which the usual quiet build hides. Run, from the
 repository root:
@@ -701,20 +731,24 @@ repository root:
 ./gradlew help --console=plain
 ```
 
-and read the `WARNING:` lines. Each names a key: `IMSG_TOKEN is not set —
+and read the `WARNING:` lines. Those about your file start `WARNING:
+secrets.properties:` and name a key: `IMSG_TOKEN is not set —
 BuildConfig.IMSG_TOKEN will be empty; the app takes the value from its Relay
-settings instead`, `RELAY_REMOTE_WS is not set — … the app derives
-wss://<RELAY_REMOTE_BASE host>/ws …`, `google-services.json not found —
-building without Firebase push`, the `FEATURES` outcome, an `APP_LABEL`
-problem. Two more lines carry no `WARNING:` prefix, because they report a
-default in use and not a problem: `APP_LABEL not set — the app is labelled
-"SelfBubbles"` and `APPLICATION_ID not set — the app installs as
-"io.github.avtraang.selfbubbles"`. Read the second one if an earlier build of
-this app is already on your phone under another id: this build would install
-beside it as a separate, empty app until you set `APPLICATION_ID` (3.2). A
-`GradleException` instead of a warning means a rule from the table
-above was broken (an `http://` base, a WebSocket URL on another host, a
-non-ASCII token, a malformed or empty `APPLICATION_ID`, a
+settings instead` (the same sentence for every key you left empty;
+`RELAY_REMOTE_WS` gets it too until `RELAY_REMOTE_BASE` is set, and from then
+on its line ends `the app derives wss://<RELAY_REMOTE_BASE host>/ws from
+RELAY_REMOTE_BASE instead`), a `FEATURES` line (only when the file has no
+`FEATURES` line at all, or the line names an unknown feature), an `APP_LABEL`
+problem. One is about another file: `WARNING: google-services.json not found —
+building without Firebase push`. Two more lines carry no `WARNING:` prefix,
+because they report a default in use and not a problem: `APP_LABEL not set —
+the app is labelled "SelfBubbles"` and `APPLICATION_ID not set — the app
+installs as "io.github.avtraang.selfbubbles"`. Read the second one if an
+earlier build of this app is already on your phone under another id: this
+build would install beside it as a separate, empty app until you set
+`APPLICATION_ID` (3.2). A `GradleException` instead of a warning means a rule
+from the table above was broken (an `http://` base, a WebSocket URL on another
+host, a non-ASCII token, a malformed or empty `APPLICATION_ID`, a
 `google-services.json` with no client for the application id); the message
 names the key and never a secret value (the application id, which is not a
 secret, is the one value a message quotes).

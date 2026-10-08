@@ -1,5 +1,7 @@
 # SelfBubbles
 
+[![CI](https://github.com/Avtraang/selfbubbles/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Avtraang/selfbubbles/actions/workflows/ci.yml)
+
 Your iMessage conversations on an Android phone — optionally with Google Messages threads and an experimental FaceTime bridge — through a relay that runs on your own Mac: no SelfBubbles server and no account with the author; the only outside services in the path are the ones you choose to add (Tailscale or Cloudflare for the route, Firebase for push, Beeper for Google Messages).
 
 SelfBubbles is an independent, personal project. It is not affiliated with, endorsed by or supported by BlueBubbles, Beeper, Apple, Google or Cloudflare. It can use the BlueBubbles server's HTTP API as one optional sending engine and Beeper Desktop for Google Messages. iMessage, FaceTime and Messages are trademarks of Apple Inc.; Google Messages is a trademark of Google LLC.
