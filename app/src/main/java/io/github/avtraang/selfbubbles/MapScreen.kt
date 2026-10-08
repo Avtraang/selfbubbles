@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import io.github.avtraang.selfbubbles.ui.theme.MessagesTheme
 
@@ -265,8 +266,16 @@ object RelayWebAssets {
      */
     private val droppedRequestHeaders = listOf("Accept-Encoding", "If-None-Match", "If-Modified-Since")
 
-    fun shouldProxy(url: String, method: String, config: RelayConfig): Boolean =
-        method == GET && config.isRelayUrl(url)
+    fun shouldProxy(url: String, method: String, config: RelayConfig): Boolean {
+        if (method != GET || !config.isRelayUrl(url)) return false
+        val parsed = url.toHttpUrlOrNull() ?: return false
+        // Only what a map page needs. Every other relay path, the ones that send a message
+        // included, stays with the WebView and so without credentials.
+        return RELAY_MAP_PATHS.any { config.isRelayPath(parsed, it) }
+    }
+
+    /** The relay paths a map page is made of: the page and its data. */
+    private val RELAY_MAP_PATHS = listOf("/map", "/locations")
 
     /** Whether a WebView request header is copied onto the proxied request (pure; RelayWebAssetsTest). */
     fun forwardsRequestHeader(name: String): Boolean =

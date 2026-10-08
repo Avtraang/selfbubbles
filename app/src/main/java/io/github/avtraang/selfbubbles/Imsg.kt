@@ -118,6 +118,39 @@ private val RELAY_CREDENTIAL_HEADERS =
     listOf("X-Imsg-Token", "CF-Access-Client-Id", "CF-Access-Client-Secret")
 
 /**
+ * Relay paths that send a message. The app only ever POSTs to them. A GET for
+ * one can only have come from content (an image address inside a received link
+ * preview, a page in the map view), so it never gets the credentials.
+ */
+internal val RELAY_ACTING_PATHS = listOf("/v/", "/assistant/")
+
+/** The relay paths an image, a thumbnail or an icon is loaded from. */
+internal val RELAY_MEDIA_PATHS =
+    listOf("/attachment/", "/thumbnail/", "/link_image/", "/link_preview_image/", "/chat_icon/", "/bp_asset")
+
+/** Whether [cfg]'s credentials go on this request: the relay origin, and not a GET for a path that sends (pure; RelayOriginTest). */
+internal fun attachesCredentials(cfg: RelayConfig, method: String, url: okhttp3.HttpUrl): Boolean =
+    cfg.isRelayUrl(url) &&
+        !(method.equals("GET", ignoreCase = true) && RELAY_ACTING_PATHS.any { cfg.isRelayPath(url, it) })
+
+/**
+ * Whether the image loader may fetch this at all: anything that is not on the
+ * relay origin, and on it only a GET for one of [RELAY_MEDIA_PATHS]. The loader
+ * is handed addresses that come from message content; the relay's own images
+ * all live under those paths (pure; RelayOriginTest).
+ */
+internal fun loadsAsImage(cfg: RelayConfig, method: String, url: okhttp3.HttpUrl): Boolean =
+    !cfg.isRelayUrl(url) ||
+        (method.equals("GET", ignoreCase = true) && RELAY_MEDIA_PATHS.any { cfg.isRelayPath(url, it) })
+
+/** For the image loader's client only: refuses, before anything is sent, what [loadsAsImage] refuses. */
+fun relayMediaOnlyInterceptorFor(config: () -> RelayConfig) = okhttp3.Interceptor { chain ->
+    val req = chain.request()
+    if (!loadsAsImage(config(), req.method, req.url)) throw java.io.IOException("not an image path of the relay")
+    chain.proceed(req)
+}
+
+/**
  * The only code that attaches credentials. Application interceptor (so it also
  * covers the WebSocket upgrade): adds the relay token and the Cloudflare Access
  * pair when — and only when — the request is for the exact relay origin, and
@@ -133,7 +166,7 @@ fun relayAuthInterceptorFor(config: () -> RelayConfig) = okhttp3.Interceptor { c
     val cfg = config()
     val b = req.newBuilder().tag(RelayConfig::class.java, cfg)
     RELAY_CREDENTIAL_HEADERS.forEach { b.removeHeader(it) }
-    if (cfg.isRelayUrl(req.url)) {
+    if (attachesCredentials(cfg, req.method, req.url)) {
         try {
             if (cfg.token.isNotEmpty()) b.header("X-Imsg-Token", cfg.token)
             if (cfg.hasCfAccess) {
@@ -177,6 +210,7 @@ fun relayAuthStripInterceptorFor(config: () -> RelayConfig) = okhttp3.Intercepto
 
 val relayAuthInterceptor = relayAuthInterceptorFor { RelayConfigStore.current }
 val relayAuthStripInterceptor = relayAuthStripInterceptorFor { RelayConfigStore.current }
+val relayMediaOnlyInterceptor = relayMediaOnlyInterceptorFor { RelayConfigStore.current }
 
 /**
  * A relay client bound to [config]: the app's timeouts (OkHttp's defaults) and

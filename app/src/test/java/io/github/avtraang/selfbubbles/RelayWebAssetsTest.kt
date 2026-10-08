@@ -27,7 +27,17 @@ class RelayWebAssetsTest {
         assertTrue(proxy("https://relay.example.test/map?scheme=dark"))
         assertTrue(proxy("https://relay.example.test/locations"))
         assertTrue(proxy("https://relay.example.test:443/locations"))
-        assertTrue(proxy("https://RELAY.example.test/static/map.js"))
+        assertTrue(proxy("https://RELAY.example.test/map"))
+    }
+
+    /** The page and its data, nothing else: least of all a path that sends a message. */
+    @Test fun otherRelayPaths_areNotProxied() {
+        assertFalse(proxy("https://relay.example.test/v/prepare?q=text%205550100%20hi"))
+        assertFalse(proxy("https://relay.example.test/v/confirm?a=yes"))
+        assertFalse(proxy("https://relay.example.test/assistant/confirm"))
+        assertFalse(proxy("https://relay.example.test/threads"))
+        assertFalse(proxy("https://relay.example.test/static/map.js"))
+        assertFalse(proxy("https://relay.example.test/"))
     }
 
     @Test fun theOwnersMapOnAnotherHost_isNotProxied() {

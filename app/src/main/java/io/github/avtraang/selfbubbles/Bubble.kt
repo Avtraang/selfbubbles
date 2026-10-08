@@ -130,7 +130,9 @@ private fun LinkCard(
     val ctx = LocalContext.current
     val colors = MessagesTheme.colors
     val secondary = MaterialTheme.colorScheme.onSurfaceVariant
-    val img = link.image?.let { if (it.startsWith("/")) BASE + it else it }
+    // A relay image is a path the relay wrote ("/link_image/…"). An absolute address comes from the
+    // sender's link preview; one that names the relay itself is never loaded.
+    val img = link.image?.let { if (it.startsWith("/")) BASE + it else it.takeUnless { u -> isRelayUrl(u) } }
     Surface(
         color = if (mine) sentColor else colors.bubbleReceived,
         shape = BubbleShape,

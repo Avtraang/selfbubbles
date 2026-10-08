@@ -207,6 +207,7 @@ object Notifs {
         imageUrl: String? = null,
         imageMime: String = "image/jpeg",
         guid: String? = null,
+        group: String? = null,
     ) {
         // The chat is open on screen: the WebSocket already showed this message.
         // Not while the app lock's screen is in front: the VM behind it still names
@@ -218,7 +219,8 @@ object Notifs {
 
         val channelId = ensureChannel(ctx)
         val id = notifId(chatGuid)
-        val isGroup = chatName.isNotBlank() && chatName != sender
+        val isGroup = pushIsGroup(group, chatName, sender)
+        val title = pushChatTitle(isGroup, chatName, sender)
 
         val imgUri = imageUrl?.let { fetchImage(ctx, BASE + it) }
         lines.add(Line(sender.ifBlank { chatName }, text,
@@ -228,7 +230,7 @@ object Notifs {
         val me = Person.Builder().setName("You").setKey("me").build()
         val style = NotificationCompat.MessagingStyle(me)
         style.isGroupConversation = isGroup
-        if (isGroup) style.conversationTitle = chatName
+        if (isGroup) style.conversationTitle = title
         for (line in lines) {
             val m = NotificationCompat.MessagingStyle.Message(
                 line.text, line.time, person(ctx, line.sender),
@@ -253,7 +255,7 @@ object Notifs {
             action = ACTION_REPLY
             putExtra(EXTRA_CHAT_GUID, chatGuid)
             // The chat's name, for the notice about a reply that could not be sent.
-            putExtra(EXTRA_CHAT_NAME, chatName.ifBlank { sender })
+            putExtra(EXTRA_CHAT_NAME, title)
             putExtra(EXTRA_ROWID, rowid)
         }
         val replyPending = PendingIntent.getBroadcast(
@@ -302,7 +304,7 @@ object Notifs {
         // The conversation shortcut for this chat (published now if it is not yet),
         // so the notification sits in the conversation space with its own settings.
         val shortcutId = ConversationShortcuts.ensureForNotification(
-            ctx, chatGuid, chatName.ifBlank { sender }, isGroup,
+            ctx, chatGuid, title, isGroup,
         )
 
         val n = NotificationCompat.Builder(ctx, channelId)
@@ -481,6 +483,23 @@ class PushService : FirebaseMessagingService() {
             imageUrl = d["image_url"],
             imageMime = d["image_mime"] ?: "image/jpeg",
             guid = d["guid"],
+            group = d["is_group"],
         )
     }
 }
+
+/**
+ * Whether a push is for a group. The relay's own word ("1" / "0" in is_group)
+ * decides when it sends one; a relay from before that field is judged by the
+ * old rule, a chat name that differs from the sender (pure; PushGroupTest).
+ */
+internal fun pushIsGroup(isGroupField: String?, chatName: String, sender: String): Boolean = when (isGroupField) {
+    "1" -> true
+    "0" -> false
+    else -> chatName.isNotBlank() && chatName != sender
+}
+
+/** The name a notification, its reply notice and its shortcut carry. A group is never named after the sender. */
+internal fun pushChatTitle(isGroup: Boolean, chatName: String, sender: String): String =
+    if (isGroup) chatName.ifBlank { "Group chat" } else chatName.ifBlank { sender }
+

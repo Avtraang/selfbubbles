@@ -335,6 +335,9 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     /** The chat the confirmation sheet was opened for; Send goes there even if
      *  a notification tap changed [current] under the dialog. */
     private var shareConfirmTarget: Thread? = null
+    /** The name of the chat Send will go to, for the sheet's title. Set before [shareConfirm], so the
+     *  composition that shows the sheet reads the right one. */
+    val shareConfirmTitle: String? get() = shareConfirmTarget?.title
     /** Text to append to the composer draft of its chat; the Conversation screen consumes it. */
     var draftAppend by mutableStateOf<DraftAppend?>(null); private set
     private var draftAppendSeq = 0

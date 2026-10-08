@@ -175,6 +175,7 @@ class MainActivity : FragmentActivity() {
                                     .build()
                             } else resp
                         }
+                        .addInterceptor(relayMediaOnlyInterceptor)
                         .addInterceptor(relayAuthInterceptor)
                         .addNetworkInterceptor(relayAuthStripInterceptor)
                         .build()
@@ -242,7 +243,7 @@ fun App(launch: LaunchRequest? = null, vm: ChatVM = viewModel()) {
     vm.shareConfirm?.let { share ->
         ShareConfirmSheet(
             share = share,
-            chatTitle = current?.title ?: "this chat",
+            chatTitle = vm.shareConfirmTitle ?: current?.title ?: "this chat",
             onSend = { vm.sendShare(activity) },
             onCancel = { vm.cancelShare() },
         )
