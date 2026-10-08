@@ -1,0 +1,23 @@
+# Android / Gradle
+/build/
+/app/build/
+/.gradle/
+/.kotlin/
+/local.properties
+/captures/
+.idea/
+*.iml
+.DS_Store
+# packaged apps (contain baked secrets)
+*.apk
+*.aab
+# Firebase client config (app/ is the canonical place; the per-variant src/ locations count too)
+/app/google-services.json
+/app/src/**/google-services.json
+# stray editor backups (MapScreen.kt.bak holds tokens)
+*.bak
+# iCloud conflict copies
+* [0-9].*
+
+# local secrets (see secrets.properties.example)
+/secrets.properties

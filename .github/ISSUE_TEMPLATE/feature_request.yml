@@ -1,0 +1,28 @@
+name: Feature request
+description: Something the app should do and does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a one-person project, so a request is a suggestion, not a ticket in a queue. Issues are public forever: describe your setup without tokens, relay addresses, phone numbers, e-mail addresses, names or message text, and without a screenshot that shows any of them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation that the app does not handle today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should the app do?
+      description: "The behaviour you would like, and on which screen. If it needs something new from the relay (a route, a field in a response), say so: the relay is a separate repository and both would have to change."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+    validations:
+      required: false

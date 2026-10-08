@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS only, everywhere: no cleartext for any host, and only the system CA
+     store is trusted. Deliberately no <debug-overrides> and no user-installed
+     certificates, so a debug build cannot be intercepted with a user CA. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

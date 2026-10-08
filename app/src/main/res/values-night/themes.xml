@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Night variant of the Android (non-Compose) theme. Compose already follows
+     the system dark setting, but WebView decides the page's
+     prefers-color-scheme from THIS theme's isLightTheme on Android 13+, so
+     without it the family map rendered light inside a dark app. A dark window
+     theme also removes the white frame before Compose draws. -->
+<resources>
+    <style name="Theme.SelfBubbles" parent="android:Theme.Material.NoActionBar" />
+</resources>

@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unit tests and debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        # The default shallow checkout is enough: the build stamp asks git only
+        # for the commit and its date (BUILD_COMMIT and BUILD_DATE in
+        # app/build.gradle.kts). On a pull request that commit is the merge
+        # commit GitHub builds, not the head of the branch.
+      - uses: actions/setup-java@v6
+        # JDK 21 is what gradle/gradle-daemon-jvm.properties pins the Gradle
+        # daemon to, and what the Android Studio the app is developed with
+        # bundles. Gradle 9.4.1 and the Android Gradle Plugin 9.2.1 need 17 or
+        # newer; the sources compile to Java 11 bytecode whichever JDK runs
+        # the build.
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+        # Checks gradle/wrapper/gradle-wrapper.jar against the checksums of
+        # Gradle's own releases, then keeps the Gradle distribution and the
+        # downloaded dependencies in the Actions cache (written by runs on the
+        # default branch, read by every run).
+        # cache-provider: basic is the action's MIT-licensed cache. Its default,
+        # "enhanced", is a closed-source component under Gradle's Terms of Use:
+        # free for public repositories, but a licence to accept first. Delete
+        # the line to take it.
+        with:
+          cache-provider: basic
+      - name: Empty secrets.properties
+        # CI never sees anyone's secrets: this repository has none configured
+        # and the build needs none. An empty secrets.properties and no
+        # google-services.json build the unconfigured app, the one a fresh
+        # clone gives: application id io.github.avtraang.selfbubbles, label
+        # SelfBubbles, no relay baked in, no Firebase push. Both files are
+        # git-ignored. Should one be committed by force all the same, the job
+        # fails here and names it, before anything is built from it: a
+        # secrets.properties at the root, or a google-services.json anywhere
+        # (the build takes one from app/ and from app/src/<variant>/).
+        run: |
+          tracked=$(git ls-files -- secrets.properties ':(glob)**/google-services.json' | tr '\n' ' ')
+          if [ -n "$tracked" ]; then
+            echo "::error::must not be committed: ${tracked}(CI builds without either file)"
+            exit 1
+          fi
+          : > secrets.properties
+      - name: Test and build
+        # Without -q on purpose: when Gradle configures the build it prints one
+        # WARNING line per empty key (the key's name, never a value) and one for
+        # the missing Firebase file, and the log should show them.
+        # No Android SDK step: the runner image carries an SDK with its licences
+        # accepted and ANDROID_HOME pointing at it, and that SDK has what this
+        # build asks for, the android-37.0 platform (compileSdk 37) and
+        # build-tools 36.0.0 (the default of the Android Gradle Plugin 9.2.1).
+        # Should an image drop either, the plugin downloads it into that SDK by
+        # itself, which the accepted licences allow.
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --console=plain
+      - name: Test report
+        # After a test failure too: that is when the report is wanted.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/*.xml
+          retention-days: 7
+      - name: Debug APK
+        # The APK of an empty-secrets build contains no secret: every relay
+        # field in its BuildConfig is an empty string and no Firebase client
+        # file went into it. It is signed with a debug key the runner made for
+        # this run, so it installs on a phone that has no SelfBubbles on it, not
+        # over a build signed with another key (yours, or another run's).
+        # Pushes to main only: a pull request's APK would be built from code
+        # nobody has reviewed and would sit under this repository's Actions tab
+        # looking like the project's own. A pull request still builds it, in
+        # the "Test and build" step; the file is just not kept.
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: selfbubbles-unconfigured-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  secrets:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # The MIT-licensed gitleaks binary, pinned and checked against the sha256
+      # in the release's checksums file: no licence key for any kind of account,
+      # and the same version the allowlist in .gitleaks.toml was checked with.
+      # Not gitleaks-action: it needs a licence key as soon as a repository
+      # belongs to an organisation, and on push and pull_request it scans only
+      # the new commits, not the history.
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks"
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan every commit
+        # --redact keeps a finding's value out of the public job log.
+        run: gitleaks version && gitleaks git . --redact --no-banner --config .gitleaks.toml

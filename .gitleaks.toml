@@ -1,0 +1,49 @@
+# gitleaks configuration: used by the "secrets" job in .github/workflows/ci.yml,
+# which scans every commit of the repository, and for the same scan of a clone
+# before a push:
+#
+#   gitleaks git . --redact --no-banner --config .gitleaks.toml
+#
+# The scan covers the history of the clone it runs in, so run it on the history
+# that is going to be pushed.
+#
+# gitleaks reads what the commits contain, not who made them. Before a first
+# push, look at the author and committer names and addresses too; this prints
+# each distinct pair once:
+#
+#   git log --all --format='%an <%ae> | %cn <%ce>' | sort -u
+#
+# The default rule set applies unchanged. The exceptions below silence three
+# known false positives, each an invented value in a unit test, and nothing
+# else; a new finding means "look at it", not "add another exception".
+# Verified with gitleaks 8.30.1, the version CI pins.
+
+title = "selfbubbles"
+
+[extend]
+useDefault = true
+
+# RelayProbeTest.kt checks that no "Test connection" result repeats a credential
+# a server echoes back, so it needs credentials to look for: an invented relay
+# token and an invented Cloudflare Access client secret, each a prefix, the word
+# SECRET and a hex ramp. generic-api-key reads the two assignments as real ones.
+# All three conditions must hold (AND): that rule, that file, and exactly one of
+# those two values. The regex is matched against the detected secret.
+[[allowlists]]
+description = "The two invented credentials (tok-SECRET-…, cfs-SECRET-…) the probe test must never see echoed"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)app/src/test/java/io/github/avtraang/selfbubbles/RelayProbeTest\.kt$''']
+regexes = ['''^(?:tok-SECRET-0123456789abcdef0123456789abcdef|cfs-SECRET-fedcba9876543210fedcba9876543210)$''']
+
+# MapDiagnosticsTest.kt checks that a JWT-shaped string is masked before a map
+# diagnostic reaches logcat, so it needs one: its three parts decode to
+# {"alg":"HS256"}, {"sub":"example"} and the text "signature-part". Nothing
+# signed it and nothing accepts it. Same three conditions: the jwt rule, that
+# file, and exactly that value.
+[[allowlists]]
+description = "One made-up JWT (payload {\"sub\":\"example\"}) in the map diagnostics masking test"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''(^|/)app/src/test/java/io/github/avtraang/selfbubbles/MapDiagnosticsTest\.kt$''']
+regexes = ['''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJleGFtcGxlIn0\.c2lnbmF0dXJlLXBhcnQ$''']

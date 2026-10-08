@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup question
+    url: https://github.com/Avtraang/selfbubbles/discussions
+    about: "Building the app, secrets.properties, the Connect to your relay form, Firebase push: ask in Discussions (docs/setup.md is the walkthrough). Issues are for bugs and feature requests."
+  - name: Security report
+    url: https://github.com/Avtraang/selfbubbles/security/policy
+    about: "Anything that could expose someone's messages or token: Security tab > Report a vulnerability (private), as SECURITY.md describes, never a public issue. No button there? Use the Security contact request form on this page."

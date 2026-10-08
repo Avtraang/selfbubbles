@@ -1,0 +1,140 @@
+name: Bug report
+description: The app does something wrong. Setup questions go to Discussions, security problems to the Security tab, relay problems to the relay's own tracker.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Issues are public forever. Never paste a token, a Cloudflare service-token secret, your relay's address, `secrets.properties`, `google-services.json`, a phone number or message text here.** The same goes for e-mail addresses, contact names and an APK: a built APK contains every value from `secrets.properties`.
+
+        **No screenshot or screen recording of a conversation, the conversation list, a notification or Settings > Relay either:** they show names, numbers, message text and your relay's address. Describe the screen in words. If a picture is the only way to show the problem, crop it to the part that is wrong and check that none of that is left in it.
+
+        Everything this form asks for can be given without any of that. The app's own logcat lines carry no message content by design, but check them anyway before you paste any: [SECURITY.md](https://github.com/Avtraang/selfbubbles/blob/main/SECURITY.md#what-is-not-protected) says what they can contain.
+
+        If the problem could expose someone's messages or token, stop here and use the **Security** tab > **Report a vulnerability** instead ([SECURITY.md](https://github.com/Avtraang/selfbubbles/blob/main/SECURITY.md#reporting-a-vulnerability)).
+
+        A problem on the Mac's side (the relay does not start, its `--check` table has a failing row, its log has a traceback) belongs in the [relay's tracker](https://github.com/Avtraang/selfbubbles-relay/issues/new/choose).
+  - type: input
+    id: version
+    attributes:
+      label: Last line of Settings
+      description: "Open Settings (the gear icon in the top bar of the conversation list) and scroll to the bottom: `Version … · build …`. The same line is at the bottom of the Connect to your relay screen. A long press selects it for copying. If the app does not start, give the commit you built instead: `git rev-parse --short HEAD` in the app checkout."
+      placeholder: "Version 1.0 · build 0a1b2c3 · 2026-10-07"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Android version and device model
+      description: "Both are under Settings > About phone on the phone. The model, not the name you gave the phone."
+      placeholder: "Android 16, Pixel 9"
+    validations:
+      required: true
+  - type: dropdown
+    id: exposure
+    attributes:
+      label: How the relay is exposed to the phone
+      options:
+        - Tailscale Serve
+        - Cloudflare Tunnel + Access
+        - Other (describe it below, without host names)
+    validations:
+      required: true
+  - type: dropdown
+    id: features
+    attributes:
+      label: Which switches are on under Settings > Features
+      description: "Pick every switch that is on."
+      multiple: true
+      options:
+        - Family map
+        - FaceTime
+        - Translation
+        - Voice assistant
+        - All four are off
+        - I cannot get to Settings (still on Connect to your relay)
+        - The app does not start
+    validations:
+      required: true
+  - type: dropdown
+    id: push
+    attributes:
+      label: The line under Settings > Push notifications
+      description: "It says whether push is built into this build. Pick the one that starts the same way."
+      options:
+        - "Push: not built in — this build has no google-services.json, …"
+        - "Push notifications: Firebase (this build includes google-services.json)."
+        - "Push: not active — this build includes google-services.json, but Firebase did not initialise, …"
+        - I cannot get to Settings (still on Connect to your relay)
+        - The app does not start
+    validations:
+      required: true
+  - type: textarea
+    id: shown
+    attributes:
+      label: The exact text the app showed
+      description: "Word for word, or `nothing` if it showed nothing: the result under Test connection, the note under a field, the line in place of the conversation list, the app's own words above the composer (`Not sent` and its reason, `Sending…`, `Editing message` and the like; never the message shown with them), a toast. The [Troubleshooting section of the README](https://github.com/Avtraang/selfbubbles/blob/main/README.md#troubleshooting) is keyed by these texts, so look yours up there first. One of them names your relay's host (`Can't reach …`): write `relay.example.com` in its place, and leave out a chat's or a person's name and any message text if the text carries one."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: "What you did, step by step, starting from opening the app. Write CHAT A or PERSON B where a real one was involved (not `<chat>`: GitHub hides anything in angle brackets here), and describe a message instead of quoting it."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        **The next two fields are about the relay. Fill them in when the relay may be part of the problem** (nothing loads, a send fails, Test connection does not say Connected); leave them empty otherwise. In a terminal on the Mac, in the relay checkout:
+
+        ```sh
+        git rev-parse --short HEAD
+        venv/bin/python relay.py --check 2>&1 | sed -E 's#/Users/[^/ ]+#/Users/<you>#g'
+        ```
+
+        The doctor prints status words only, never a token, a password or a URL. It does print paths, and the `sed` replaces your macOS user name in them.
+  - type: input
+    id: relay_commit
+    attributes:
+      label: Relay commit
+      description: "What the first command above printed."
+      placeholder: "0a1b2c3"
+    validations:
+      required: false
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of python relay.py --check
+      description: "What the second command above printed, from the `[check] relay doctor` line down. Then look for your macOS user name once more, and replace the address in the `listening on` row if it is not `127.0.0.1` or `0.0.0.0`. The relay's [docs/privacy-and-logs.md](https://github.com/Avtraang/selfbubbles-relay/blob/main/docs/privacy-and-logs.md#redacting-before-you-paste-a-log-into-an-issue) lists what else a relay log can hold."
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: logcat
+    attributes:
+      label: Logcat lines, read through first
+      description: "Only the app's own tags, from the moment it went wrong: `adb logcat -s ImsgWS Imsg Push`. Never a raw `adb logcat` dump, which holds every other app's lines too. By design these lines carry no message text, sender, chat identifier or host, **but read them before you paste them**. Add `FamilyMap` to the command only when the report is about the map, and then read every line: they name the address of the map page and of what it loads (your relay's host when the map is the relay's own `/map`) and repeat the page's title and whatever it writes to its console, which may be names or places. Replace every host with `relay.example.com` and remove the rest. For a crash, add the `FATAL EXCEPTION` block from `adb logcat -s AndroidRuntime` that names this app, read through first as well: an exception message can quote a host name or part of a relay answer."
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Before you submit
+      options:
+        - label: "Nothing above, and no picture I attached, contains a token or password, a Cloudflare service-token id or secret, my relay's address or another host name of mine, a phone number, an e-mail address, a contact name or message text."
+          required: true
