@@ -410,10 +410,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         }
         sendTick++
         Sfx.playSend(ctx)
-        viewModelScope.launch {
-            uploadAttachments(app, t, uris)
-            withContext(Dispatchers.IO) { ShareStore.delete(share) }
-        }
+        uploadAttachments(app, t, uris) { withContext(Dispatchers.IO) { ShareStore.delete(share) } }
     }
 
     /** The Conversation screen took [d] into its draft. */
@@ -830,30 +827,23 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         Sfx.playSend(ctx)
         val t = current ?: return
         val app = ctx.applicationContext
-        viewModelScope.launch { uploadAttachments(app, t, uris) }
+        uploadAttachments(app, t, uris)
     }
 
-    /** Uploads [uris] to [t] one after another (the picker, the keyboard and the share sheet all end here). */
-    private suspend fun uploadAttachments(app: Context, t: Thread, uris: List<Uri>) {
-        sending += uris.size
-        for (uri in uris) {
-            val sent = runCatching { Api.sendAttachment(t.chat_guid, app.contentResolver, uri) }
-                // Class names only: the throwable's text can name the picked file (its content URI).
-                .onFailure { android.util.Log.e("Imsg", sendFailureLogLine("attachment send", it)) }
-            val via = sent.getOrNull()
-            if (via == null) {
-                // Says why when the tunnel is the cause (size limit / timeout), and that the file
-                // may have gone out when the send ended without a certain refusal.
-                val message = attachmentFailureMessage(sent.exceptionOrNull())
-                Toast.makeText(
-                    app, message,
-                    if (message == sendFailureMessage(SendFailure.OTHER)) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-                ).show()
-            } else {
-                noteSendPath(via)
-            }
-            sending -= 1
-        }
+    /**
+     * Uploads [uris] to [t] one after another (the picker, the keyboard and the share sheet all end
+     * here). Uploads.kt does it, outside this ViewModel's lifetime: leaving the chat does not end an
+     * upload, and one that fails is reported whoever is or is not looking. How each ended comes back
+     * through [uploadEnded]; [afterAll] runs when the last one has.
+     */
+    private fun uploadAttachments(app: Context, t: Thread, uris: List<Uri>, afterAll: suspend () -> Unit = {}) {
+        // The list's name for the chat when it has one: a chat opened from a notification is a bare stub.
+        val listed = threads.value.firstOrNull { it.chat_guid == t.chat_guid } ?: t
+        Uploads.send(app, t.chat_guid, unsentChatTitle(listed.title, t.chat_guid), uris, afterAll)
+    }
+
+    private fun uploadEnded(result: UploadResult) {
+        if (result.via != null && current?.chat_guid == result.chatGuid) noteSendPath(result.via)
     }
 
     /** Keyboard GIF/sticker (InputConnection.commitContent). The IME hands us a
@@ -1088,6 +1078,9 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         }
         // How each text send ended (Outbox.kt sends them, outside this ViewModel's lifetime).
         viewModelScope.launch { Outbox.results.collect { textSendEnded(it) } }
+        // The same for attachments (Uploads.kt), and how many are in flight for the composer's spinner.
+        viewModelScope.launch { Uploads.results.collect { uploadEnded(it) } }
+        viewModelScope.launch { Uploads.inFlight.collect { sending = it } }
     }
 }
 

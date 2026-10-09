@@ -705,11 +705,12 @@ class SendRecoveryTest {
 
     @Test fun anAttachmentFailure_saysItsCause_orThatItMayHaveGoneOut() {
         assertEquals("Too large to send (limit is about 100 MB)", attachmentFailureMessage(SendFailedException(SendFailure.TOO_LARGE, "x")))
+        // A timeout is the app or the route giving up on waiting, not the relay giving up on sending (A3-F4).
         assertEquals(
-            "Attachment timed out — it may be too large or the Mac too slow",
+            ATTACHMENT_TIMED_OUT_MESSAGE,
             attachmentFailureMessage(SendFailedException(SendFailure.TIMED_OUT, "send_attachment HTTP 524", 524)),
         )
-        assertEquals("Attachment timed out — it may be too large or the Mac too slow", attachmentFailureMessage(SocketTimeoutException("timeout")))
+        assertEquals(ATTACHMENT_TIMED_OUT_MESSAGE, attachmentFailureMessage(SocketTimeoutException("timeout")))
         // Certainly not sent: the plain words.
         assertEquals("Couldn't send attachment", attachmentFailureMessage(SendFailedException(SendFailure.OTHER, "send_attachment HTTP 501", 501)))
         assertEquals("Couldn't send attachment", attachmentFailureMessage(UnknownHostException("relay.example.test")))

@@ -146,10 +146,12 @@ fun lockAvailabilityFor(canAuthenticate: Int): LockAvailability = when (canAuthe
  * Whether a push for [chatGuid] is redundant because that chat is open on screen.
  * Only when the app is in front AND not gated by the lock: while the lock screen
  * is up the ChatVM behind it still names its last chat as open, but nothing of it
- * shows, so the message must still reach the shade.
+ * shows, so the message must still reach the shade. And only while the live
+ * connection is up ([socketLive], RelaySocket.kt): it is the socket's frame that
+ * draws the message in the open chat, and with no socket nothing would.
  */
-fun pushIsRedundant(foreground: Boolean, gated: Boolean, openChat: String?, chatGuid: String): Boolean =
-    foreground && !gated && openChat == chatGuid
+fun pushIsRedundant(foreground: Boolean, gated: Boolean, openChat: String?, chatGuid: String, socketLive: Boolean): Boolean =
+    foreground && !gated && openChat == chatGuid && socketLive
 
 // ---------------------------------------------------------------------------
 // Persisted preferences

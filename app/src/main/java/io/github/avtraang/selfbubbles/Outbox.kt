@@ -169,6 +169,6 @@ object Outbox {
     /** The "not sent" notification of a chat goes once none of its texts is waiting for the owner any more. */
     private fun clearNotificationWhenSettled(chatGuid: String) {
         val a = app ?: return
-        if (held.value.none { it.chatGuid == chatGuid && !it.sending }) Notifs.clearUnsent(a, chatGuid)
+        if (held.value.none { it.chatGuid == chatGuid && !it.sending }) Notifs.clearUnsent(a, chatGuid, attachments = false)
     }
 }

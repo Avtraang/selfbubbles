@@ -37,6 +37,7 @@ const val EXTRA_ROWID = "rowid"
 private const val UNSENT_CHANNEL_ID = "imsg-unsent"
 /** Keeps a chat's "not sent" notification apart from its conversation notification, which has the same id. */
 private const val UNSENT_TAG = "unsent"
+private const val UNSENT_FILE_TAG = "unsent-file"
 /** The action of the intent behind a "not sent" notification; it only tells that intent from the conversation notification's. */
 const val ACTION_OPEN_UNSENT = "io.github.avtraang.selfbubbles.OPEN_UNSENT"
 
@@ -121,7 +122,7 @@ object Notifs {
      * the composer with "Send again" and "Discard". No message text in it. One
      * per chat; a later failure there replaces it and alerts again.
      */
-    fun showUnsent(ctx: Context, chatGuid: String, chatName: String, title: String, text: String) {
+    fun showUnsent(ctx: Context, chatGuid: String, chatName: String, title: String, text: String, attachment: Boolean = false) {
         val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (mgr.getNotificationChannel(UNSENT_CHANNEL_ID) == null) {
             mgr.createNotificationChannel(
@@ -156,12 +157,18 @@ object Notifs {
             .setAutoCancel(true)
             .setContentIntent(openPending)
             .build()
-        runCatching { NotificationManagerCompat.from(ctx).notify(UNSENT_TAG, id, n) }
+        // An attachment's notice has a tag of its own: it is not replaced by a text's, and a text
+        // that is delivered later does not take it away (Outbox.clearNotificationWhenSettled).
+        runCatching { NotificationManagerCompat.from(ctx).notify(if (attachment) UNSENT_FILE_TAG else UNSENT_TAG, id, n) }
     }
 
-    /** The chat was opened, or none of its texts waits for the owner any more. */
-    fun clearUnsent(ctx: Context, chatGuid: String) {
+    /**
+     * The chat was opened ([attachments] too: the owner is looking at it), or
+     * none of its texts waits for the owner any more (texts only).
+     */
+    fun clearUnsent(ctx: Context, chatGuid: String, attachments: Boolean = true) {
         runCatching { NotificationManagerCompat.from(ctx).cancel(UNSENT_TAG, notifId(chatGuid)) }
+        if (attachments) runCatching { NotificationManagerCompat.from(ctx).cancel(UNSENT_FILE_TAG, notifId(chatGuid)) }
     }
 
     private fun person(ctx: Context, name: String): Person {
@@ -212,7 +219,7 @@ object Notifs {
         // The chat is open on screen: the WebSocket already showed this message.
         // Not while the app lock's screen is in front: the VM behind it still names
         // the chat as open, but the owner cannot see it (pushIsRedundant, AppLock.kt).
-        if (pushIsRedundant(foreground, AppLock.gated, openChat, chatGuid)) return
+        if (pushIsRedundant(foreground, AppLock.gated, openChat, chatGuid, relaySocket.live)) return
         val lines = history.getOrPut(chatGuid) { mutableListOf() }
         // Same message pushed twice (relay replay, duplicate delivery): don't re-alert.
         if (!guid.isNullOrBlank() && lines.any { it.guid == guid }) return

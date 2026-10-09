@@ -15,5 +15,6 @@ class ImsgApp : Application() {
         Features.init(this)
         // The texts not yet delivered (Outbox.kt), before a notification reply or a screen can add one.
         Outbox.init(this)
+        Uploads.init(this)
     }
 }

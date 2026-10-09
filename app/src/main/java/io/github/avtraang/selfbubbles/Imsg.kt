@@ -354,6 +354,17 @@ val httpSend: OkHttpClient = http.newBuilder()
     .build()
 
 /**
+ * The POST that answers the relay's voice question. The relay empties its
+ * pending slot before it sends, so a POST that OkHttp repeated after a lost
+ * connection would be told "nothing waiting" for a message that went out:
+ * the body is written once ([sentOnce]).
+ */
+fun voiceConfirmRequest(base: String, answer: String): Request =
+    Request.Builder().url("$base/v/confirm")
+        .post(FormBody.Builder().add("answer", answer).build().sentOnce())
+        .build()
+
+/**
  * [this] as a body OkHttp writes to the wire at most once.
  *
  * OkHttp repeats a request by itself when the connection fails after the
@@ -945,17 +956,17 @@ object Api {
     suspend fun voicePrepare(query: String): String? = withContext(Dispatchers.IO) {
         val body = FormBody.Builder().add("query", query).build()
         val req = Request.Builder().url("$BASE/v/prepare").post(body).build()
-        http.newCall(req).execute().use { r ->
-            if (r.isSuccessful) r.body?.string()?.trim() else null
-        }
+        http.newCall(req).execute().use { r -> voiceReply(r.code, if (r.isSuccessful) r.body?.string() else null) }
     }
 
-    /** Voice: answer the relay's question ("yes" / "no" / a contact name). */
+    /**
+     * Voice: answer the relay's question ("yes" / "no" / a contact name). A
+     * "yes" makes the relay send before it answers, so this waits as long as
+     * a text send does ([httpSend]) and is posted once ([voiceConfirmRequest]).
+     */
     suspend fun voiceConfirm(answer: String): String? = withContext(Dispatchers.IO) {
-        val body = FormBody.Builder().add("answer", answer).build()
-        val req = Request.Builder().url("$BASE/v/confirm").post(body).build()
-        http.newCall(req).execute().use { r ->
-            if (r.isSuccessful) r.body?.string()?.trim() else null
+        httpSend.newCall(voiceConfirmRequest(BASE, answer)).execute().use { r ->
+            voiceReply(r.code, if (r.isSuccessful) r.body?.string() else null)
         }
     }
 
@@ -1040,6 +1051,8 @@ class WsManager(
     @Volatile private var stopped = false
     private var ws: WebSocket? = null
     private val generation = java.util.concurrent.atomic.AtomicInteger()
+    /** This manager's sockets in the process-wide state; it can end only its own (RelaySocket.kt). */
+    private val sockets = relaySocket.owner()
 
     fun start() = connect()
 
@@ -1058,6 +1071,7 @@ class WsManager(
         // first, so the old listener — and the onFailure its cancel triggers — is
         // already orphaned, and any reconnect it had pending finds itself stale.
         val gen = generation.incrementAndGet()
+        val attempt = sockets.attempt()
         ws?.cancel()
         ws = null
         // One snapshot per attempt (see RelayConfig.kt); nothing to do while unconfigured.
@@ -1071,6 +1085,7 @@ class WsManager(
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!live()) return
+                sockets.opened(attempt)
                 Log.d("ImsgWS", "connected")
                 onOpen()
             }
@@ -1087,7 +1102,17 @@ class WsManager(
                 }
             }
 
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                // The relay asked to close: it is restarting, or it gave up on a connection that had
+                // stopped taking data. OkHttp reports onClosed only once this side has closed as well,
+                // and the default does nothing, so without this answer nothing here reconnected until
+                // a ping went unanswered (audit R3-F4).
+                sockets.ended(attempt)
+                webSocket.close(1000, null)
+            }
+
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                sockets.ended(attempt)
                 if (!live()) return
                 // The throwable's own text can name the relay's host or repeat a status line: class and code only.
                 Log.d("ImsgWS", wsFailureLogLine(t, response?.code))
@@ -1095,6 +1120,7 @@ class WsManager(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                sockets.ended(attempt)
                 if (!live()) return
                 // The close reason is free text from the wire; the code says enough.
                 Log.d("ImsgWS", "closed: $code")
@@ -1125,6 +1151,7 @@ class WsManager(
     fun stop() {
         stopped = true
         generation.incrementAndGet()
+        sockets.stop()
         ws?.cancel()
         ws = null
     }

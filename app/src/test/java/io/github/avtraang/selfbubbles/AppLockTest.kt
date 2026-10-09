@@ -309,16 +309,16 @@ class AppLockTest {
     // ---- push suppression while the lock screen is in front ----
 
     @Test fun pushIsRedundant_onlyForTheOpenChatInFrontAndUnlocked() {
-        assertTrue(pushIsRedundant(foreground = true, gated = false, openChat = "c1", chatGuid = "c1"))
-        assertFalse(pushIsRedundant(foreground = true, gated = false, openChat = "c1", chatGuid = "c2"))
-        assertFalse(pushIsRedundant(foreground = true, gated = false, openChat = null, chatGuid = "c1"))
-        assertFalse(pushIsRedundant(foreground = false, gated = false, openChat = "c1", chatGuid = "c1"))
+        assertTrue(pushIsRedundant(foreground = true, gated = false, openChat = "c1", chatGuid = "c1", socketLive = true))
+        assertFalse(pushIsRedundant(foreground = true, gated = false, openChat = "c1", chatGuid = "c2", socketLive = true))
+        assertFalse(pushIsRedundant(foreground = true, gated = false, openChat = null, chatGuid = "c1", socketLive = true))
+        assertFalse(pushIsRedundant(foreground = false, gated = false, openChat = "c1", chatGuid = "c1", socketLive = true))
     }
 
     @Test fun pushIsRedundant_neverWhileTheLockScreenIsUp() {
         // The VM behind the lock screen still names its last chat as open, but the
         // owner cannot see it, so the message must still reach the shade.
-        assertFalse(pushIsRedundant(foreground = true, gated = true, openChat = "c1", chatGuid = "c1"))
-        assertFalse(pushIsRedundant(foreground = false, gated = true, openChat = "c1", chatGuid = "c1"))
+        assertFalse(pushIsRedundant(foreground = true, gated = true, openChat = "c1", chatGuid = "c1", socketLive = true))
+        assertFalse(pushIsRedundant(foreground = false, gated = true, openChat = "c1", chatGuid = "c1", socketLive = true))
     }
 }

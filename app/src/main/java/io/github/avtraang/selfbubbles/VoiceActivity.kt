@@ -108,7 +108,17 @@ class VoiceActivity : ComponentActivity() {
             }
         }
 
-        lifecycleScope.launch { runConversation() }
+        lifecycleScope.launch {
+            try {
+                runConversation()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The last line of defence: nothing thrown here may end the process (class name only).
+                android.util.Log.e("Imsg", "voice conversation stopped (${failureLabel(e)})")
+                runCatching { finish() }
+            }
+        }
     }
 
     private suspend fun runConversation() {
@@ -122,10 +132,7 @@ class VoiceActivity : ComponentActivity() {
         }
         status = "\u201C$spoken\u201D"
 
-        val reply = Api.voicePrepare(spoken) ?: run {
-            finishWith("Couldn't reach the relay.")
-            return
-        }
+        val reply = voiceCall(VoiceStep.PREPARE, ::logVoiceFailure) { Api.voicePrepare(spoken) }
         status = reply
         say(reply)
 
@@ -140,13 +147,18 @@ class VoiceActivity : ComponentActivity() {
         val answer = listen("Yes or no")
         busy = true
         if (answer.isNullOrBlank()) {
-            val cancelled = Api.voiceConfirm("cancel") ?: "Cancelled."
+            val cancelled = voiceCall(VoiceStep.CANCEL, ::logVoiceFailure) { Api.voiceConfirm("cancel") }
             finishWith(cancelled, speak = true)
             return
         }
 
-        val result = Api.voiceConfirm(answer) ?: "Couldn't reach the relay."
+        val result = voiceCall(VoiceStep.ANSWER, ::logVoiceFailure) { Api.voiceConfirm(answer) }
         finishWith(result, speak = true)
+    }
+
+    /** Class names and the status only: the throwable's text can name the relay's address. */
+    private fun logVoiceFailure(e: Throwable) {
+        android.util.Log.e("Imsg", sendFailureLogLine("voice call", e))
     }
 
     private suspend fun finishWith(message: String, speak: Boolean = false) {

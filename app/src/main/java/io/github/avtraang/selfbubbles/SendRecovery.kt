@@ -448,6 +448,9 @@ fun recheckOnOpenSince(outbox: List<UnsentText>, chatGuid: String, nowMillis: Lo
 
 // ---- other sends that fail ----
 
+/** For an attachment whose upload ran into a timeout: the Mac may still be sending it. */
+const val ATTACHMENT_TIMED_OUT_MESSAGE = "The attachment timed out and may still be sent \u2014 check the chat before sending it again"
+
 /** The toast for an attachment whose send ended without the relay saying it failed for certain. */
 const val ATTACHMENT_UNCONFIRMED_MESSAGE = "The attachment may not have been sent \u2014 check the chat before sending it again"
 
@@ -459,7 +462,10 @@ const val ATTACHMENT_UNCONFIRMED_MESSAGE = "The attachment may not have been sen
 fun attachmentFailureMessage(error: Throwable?): String {
     val reason = sendFailureFor(error)
     return when {
-        reason != SendFailure.OTHER -> sendFailureMessage(reason)
+        reason == SendFailure.TOO_LARGE -> sendFailureMessage(reason)
+        // The app, or the route in front of the relay, stopped waiting. The relay did not: it goes
+        // on sending the file, so "timed out" must not read as "not sent" (audit A3-F4).
+        reason == SendFailure.TIMED_OUT -> ATTACHMENT_TIMED_OUT_MESSAGE
         unsentWhyFor(error).certain -> sendFailureMessage(SendFailure.OTHER)
         else -> ATTACHMENT_UNCONFIRMED_MESSAGE
     }
