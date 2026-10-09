@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -29,6 +30,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -46,19 +51,34 @@ import io.github.avtraang.selfbubbles.ui.theme.Spacing
  * as "Sending…" with no actions, since it may still be delivered. The oldest
  * few show ([rows]), with one line for the rest. Nothing here touches the
  * composer: the owner's draft is his whatever happens to an earlier text.
+ *
+ * A row offers one way to send ([unsentSendAction]): "Send again", which
+ * cannot deliver the text twice, or "Send anyway", which can, and is carried
+ * out ([onSendAnyway]) only after the owner has confirmed the warning.
  */
 @Composable
 fun UnsentStrip(
     rows: UnsentRows,
     onSendAgain: (UnsentText) -> Unit,
+    onSendAnyway: (UnsentText) -> Unit,
     onCopy: (UnsentText) -> Unit,
     onDiscard: (UnsentText) -> Unit,
 ) {
+    var confirming by remember { mutableStateOf<UnsentText?>(null) }
+    confirming?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text(SEND_ANYWAY_TITLE) },
+            text = { Text(SEND_ANYWAY_WARNING) },
+            confirmButton = { TextButton(onClick = { confirming = null; onSendAnyway(entry) }) { Text(SEND_ANYWAY_LABEL) } },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
+        )
+    }
     if (rows.shown.isEmpty()) return
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
         rows.shown.forEachIndexed { i, entry ->
             if (i > 0) HorizontalDivider(thickness = Dimens.hairline, color = MaterialTheme.colorScheme.outlineVariant)
-            UnsentRow(entry, onSendAgain, onCopy, onDiscard)
+            UnsentRow(entry, onSendAgain, onAskSendAnyway = { confirming = it }, onCopy, onDiscard)
         }
         if (rows.more > 0) {
             Text(
@@ -77,6 +97,7 @@ fun UnsentStrip(
 private fun UnsentRow(
     entry: UnsentText,
     onSendAgain: (UnsentText) -> Unit,
+    onAskSendAnyway: (UnsentText) -> Unit,
     onCopy: (UnsentText) -> Unit,
     onDiscard: (UnsentText) -> Unit,
 ) {
@@ -121,7 +142,10 @@ private fun UnsentRow(
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = { onDiscard(entry) }) { Text("Discard") }
                 TextButton(onClick = { onCopy(entry) }) { Text("Copy") }
-                TextButton(onClick = { onSendAgain(entry) }) { Text("Send again") }
+                when (unsentSendAction(entry)) {
+                    UnsentSendAction.SEND_AGAIN -> TextButton(onClick = { onSendAgain(entry) }) { Text("Send again") }
+                    UnsentSendAction.SEND_ANYWAY -> TextButton(onClick = { onAskSendAnyway(entry) }) { Text(SEND_ANYWAY_LABEL) }
+                }
             }
         }
     }

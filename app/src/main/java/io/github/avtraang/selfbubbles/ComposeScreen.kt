@@ -71,6 +71,20 @@ internal fun recipientsRestored(saved: List<String>): List<ContactHit> =
 @Composable
 fun ComposeScreen(vm: ChatVM) {
     val ctx = LocalContext.current
+    // A second start of a conversation whose first try may have gone out: asked about first (SendIds.kt).
+    if (vm.newChatAsk != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.dismissNewChatAsk() },
+            title = { Text(SEND_ANYWAY_TITLE) },
+            text = { Text(NEW_CHAT_ANYWAY_WARNING) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { vm.createChatAnyway(ctx) }) { Text(SEND_ANYWAY_LABEL) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { vm.dismissNewChatAsk() }) { Text("Cancel") }
+            },
+        )
+    }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     // What the owner typed here (the recipients, the half-typed name, the message) is

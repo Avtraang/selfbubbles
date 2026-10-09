@@ -419,6 +419,8 @@ class SendFailedException(
     detail: String,
     val httpCode: Int? = null,
     val html: Boolean = false,
+    /** The relay's own reason, when its answer named one ([relayErrorCode]). */
+    val relayCode: String? = null,
 ) : IOException(detail)
 
 /** True when a file of [sizeBytes] cannot fit through the tunnel. Unknown sizes (null / <0) pass. */
@@ -627,6 +629,8 @@ data class ContactHit(
 @Serializable private data class WsEnvelope(val type: String, val data: Msg? = null)
 @Serializable private data class SendReq(
     val chat_guid: String, val text: String, val reply_to_guid: String? = null,
+    // The send id (SendIds.kt). A null default is left out of the JSON, so a text without one is sent as it always was.
+    val client_id: String? = null,
 )
 @Serializable private data class SendResp(val ok: Boolean = false, val via: String? = null)
 @Serializable private data class ReactReq(val chat_guid: String, val message_guid: String, val reaction: String)
@@ -637,8 +641,21 @@ data class ContactHit(
 @Serializable private data class ReadReq(val chat_guid: String, val rowid: Long)
 @Serializable private data class ContactSearchResp(val results: List<ContactHit>)
 @Serializable private data class MessageSearchResp(val results: List<SearchHit>)
-@Serializable private data class CreateChatReq(val addresses: List<String>, val text: String)
-@Serializable private data class CreateChatResp(val ok: Boolean = false, val chat_guid: String? = null)
+@Serializable private data class CreateChatReq(val addresses: List<String>, val text: String, val client_id: String? = null)
+@Serializable private data class CreateChatResp(
+    val ok: Boolean = false, val chat_guid: String? = null, val duplicate: Boolean = false,
+)
+
+/** What the relay answered to the first text of a new conversation: where the chat is (null when it could not name it), and whether this id had started it before. */
+data class NewChatReply(val chatGuid: String?, val duplicate: Boolean)
+
+/** The POST that starts a conversation with its first text, written once ([sentOnce]); [clientId] is its send id. */
+fun newChatRequest(base: String, addresses: List<String>, text: String, clientId: String?): Request {
+    val body = json.encodeToString(CreateChatReq(addresses, text, clientId))
+        .toRequestBody("application/json".toMediaType())
+        .sentOnce()
+    return Request.Builder().url("$base/create_chat").post(body).build()
+}
 @Serializable private data class MatchChatReq(val addresses: List<String>)
 @Serializable private data class PinOrderReq(val order: List<String>)
 @Serializable private data class ArchiveReq(val chat_guid: String, val archived: Boolean)
@@ -659,8 +676,8 @@ data class ContactHit(
  * most once ([sentOnce]): a send is not idempotent, and the relay cannot tell a
  * repeated POST from a second message.
  */
-fun textSendRequest(base: String, guid: String, text: String, replyTo: String?): Request {
-    val body = json.encodeToString(SendReq(guid, text, replyTo))
+fun textSendRequest(base: String, guid: String, text: String, replyTo: String?, clientId: String? = null): Request {
+    val body = json.encodeToString(SendReq(guid, text, replyTo, clientId))
         .toRequestBody("application/json".toMediaType())
         .sentOnce()
     return Request.Builder().url("$base/send").post(body).build()
@@ -668,6 +685,9 @@ fun textSendRequest(base: String, guid: String, text: String, replyTo: String?):
 
 /** The part of a message an edit or an unsend names. The app offers both for plain text messages only, which are one part. */
 private const val CHANGE_PART_INDEX = 0
+
+/** How much of a refused send's answer is read for the relay's reason: its own is a few dozen bytes. */
+private const val SEND_REFUSAL_MAX_BYTES = 8L * 1024
 
 /** How much of a reply to an edit or an unsend is read: the relay's is a few dozen bytes; a page in its place may be anything. */
 private const val CHANGE_REPLY_MAX_BYTES = 64L * 1024
@@ -738,7 +758,7 @@ object Api {
      * ("send HTTP 502").
      */
     private fun sendReplyVia(r: Response, what: String): String {
-        if (!r.isSuccessful) throw SendFailedException(sendFailureFor(r.code), "$what HTTP ${r.code}", r.code)
+        if (!r.isSuccessful) throw sendRefused(r, what)
         val reply = r.body!!.string()
         val type = r.header("Content-Type")
         if (!isRelaySendReply(type, reply)) {
@@ -747,6 +767,12 @@ object Api {
             )
         }
         return runCatching { json.decodeFromString<SendResp>(reply) }.getOrNull()?.via ?: "bb"
+    }
+
+    /** A status in place of a delivery, with the relay's own reason when its answer names one (never the body itself). */
+    private fun sendRefused(r: Response, what: String): SendFailedException {
+        val code = relayErrorCode(runCatching { r.peekBody(SEND_REFUSAL_MAX_BYTES).string() }.getOrNull())
+        return SendFailedException(sendFailureFor(r.code), "$what HTTP ${r.code}", r.code, relayCode = code)
     }
 
     /**
@@ -758,9 +784,40 @@ object Api {
      * Texts typed by the owner go through [Outbox], which keeps them until this
      * returns; only a caller that reports the failure itself calls this directly.
      */
-    suspend fun send(guid: String, text: String, replyTo: String? = null): String = withContext(Dispatchers.IO) {
-        httpSend.newCall(textSendRequest(BASE, guid, text, replyTo)).execute().use { r -> sendReplyVia(r, "send") }
-    }
+    suspend fun send(guid: String, text: String, replyTo: String? = null, clientId: String? = null): String =
+        withContext(Dispatchers.IO) {
+            httpSend.newCall(textSendRequest(BASE, guid, text, replyTo, clientId)).execute().use { r -> sendReplyVia(r, "send") }
+        }
+
+    /**
+     * Whether the relay in force keeps send ids, asked now (`/health`); null
+     * when nothing answered as a relay. Asked just before a text that may
+     * have gone out is sent again under its id ([sendAgainPlan]).
+     */
+    suspend fun relayKeepsSendIds(): Boolean? =
+        relayKeepsSendIds(runCatching { RelayProbe.probe(RelayConfigStore.current) }.getOrNull())
+
+    /**
+     * Starts a conversation with its first text under the send id [clientId];
+     * every failure throws as [send]'s does. The compose screen's path
+     * ([createChat] below is the one without an id).
+     */
+    suspend fun startChat(addresses: List<String>, text: String, clientId: String): NewChatReply =
+        withContext(Dispatchers.IO) {
+            httpSend.newCall(newChatRequest(BASE, addresses, text, clientId)).execute().use { r ->
+                if (!r.isSuccessful) throw sendRefused(r, "create_chat")
+                val reply = r.body!!.string()
+                val type = r.header("Content-Type")
+                if (!isRelaySendReply(type, reply)) {
+                    throw SendFailedException(
+                        SendFailure.OTHER, "create_chat HTTP ${r.code}, not the relay's reply", r.code,
+                        html = looksLikeHtml(type, reply),
+                    )
+                }
+                val made = json.decodeFromString<CreateChatResp>(reply)
+                NewChatReply(made.chat_guid, made.duplicate)
+            }
+        }
 
     /** Streams a picked photo/video to the relay; returns the delivery path.
      *  Every failure throws: [SendFailedException] when something answered that

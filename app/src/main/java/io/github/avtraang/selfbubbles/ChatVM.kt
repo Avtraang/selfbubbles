@@ -564,25 +564,73 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         }
     }
 
-    fun createChat(ctx: Context, addresses: List<String>, title: String, text: String) {
+    /**
+     * The first text of a new conversation has no stored entry, so its send id
+     * lives here, with the compose screen: a second tap on the same message to
+     * the same people is the same send, which the relay does not carry out
+     * twice (SendIds.kt). Gone with this ViewModel: if the app is closed before
+     * the send has ended and the message is typed again, that is a new send.
+     */
+    private var newChatSend: NewChatSend? = null
+
+    /** What the compose screen asks about before a start that may deliver the first message a second time. */
+    data class NewChatAsk(val addresses: List<String>, val title: String, val text: String)
+    var newChatAsk by mutableStateOf<NewChatAsk?>(null); private set
+
+    fun createChat(ctx: Context, addresses: List<String>, title: String, text: String) =
+        startNewChat(ctx, addresses, title, text, anyway = false)
+
+    /** "Send anyway" on the compose screen's warning: the same message as a new send, under a new id. */
+    fun createChatAnyway(ctx: Context) {
+        val ask = newChatAsk ?: return
+        newChatAsk = null
+        newChatSend = null
+        startNewChat(ctx, ask.addresses, ask.title, ask.text, anyway = true)
+    }
+
+    fun dismissNewChatAsk() { newChatAsk = null }
+
+    private fun startNewChat(ctx: Context, addresses: List<String>, title: String, text: String, anyway: Boolean) {
         if (creatingChat) return
-        Sfx.playSend(ctx)
         val app = ctx.applicationContext
+        val send = newChatSendFor(newChatSend, addresses, text, ::newSendId).also { newChatSend = it }
         viewModelScope.launch {
             creatingChat = true
-            val made = runCatching { Api.createChat(addresses, text) }
+            if (!anyway && send.doubtful) {
+                // A try of this very send ended without a certain answer. Under its id a relay that
+                // keeps ids cannot start the conversation twice; any other relay could, so ask first.
+                val keepsIds = runCatching { Api.relayKeepsSendIds() }.getOrNull()
+                currentCoroutineContext().ensureActive()
+                if (newChatPlan(send, keepsIds) == NewChatPlan.ASK_FIRST) {
+                    creatingChat = false
+                    newChatAsk = NewChatAsk(addresses, title, text)
+                    return@launch
+                }
+            }
+            Sfx.playSend(ctx)
+            val made = runCatching { Api.startChat(addresses, text, send.id) }
                 // Class names only: a decoding error would quote the reply, chat identifier included.
                 .onFailure { android.util.Log.e("Imsg", sendFailureLogLine("create chat", it)) }
             currentCoroutineContext().ensureActive()    // the screen is gone: nothing left to say
-            val guid = made.getOrNull()
+            val reply = made.getOrNull()
             creatingChat = false
-            if (guid == null) {
-                // The first text travels like any send: unless the refusal is certain it may have
-                // been delivered, and the typed text is still in the field for a second tap.
-                Toast.makeText(app, createChatFailureMessage(made.exceptionOrNull()), Toast.LENGTH_LONG).show()
+            if (reply == null) {
+                val error = made.exceptionOrNull()
+                newChatSend = newChatAfter(send, error)
+                if (newChatMustAsk(error)) {
+                    // The relay knows this send and cannot say what became of it: only "Send anyway" is left.
+                    newChatAsk = NewChatAsk(addresses, title, text)
+                } else {
+                    // The first text travels like any send: unless the refusal is certain it may have
+                    // been delivered, and the typed text is still in the field for a second tap.
+                    Toast.makeText(app, createChatFailureMessage(error), Toast.LENGTH_LONG).show()
+                }
             } else {
+                newChatSend = null
                 composing = false
-                open(Thread(chat_guid = guid, chat_name = title, last_rowid = 0))
+                val guid = reply.chatGuid
+                if (guid != null) open(Thread(chat_guid = guid, chat_name = title, last_rowid = 0))
+                else Toast.makeText(app, NEW_CHAT_ALREADY_SENT, Toast.LENGTH_LONG).show()
                 refreshThreads()
             }
         }
@@ -758,6 +806,12 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     fun sendAgain(entry: UnsentText) {
         sendTick++
         Outbox.sendAgain(getApplication(), entry.id)
+    }
+
+    /** "Send anyway" on an unsent text's row, after its warning was confirmed: a new message under a new id. */
+    fun sendAnyway(entry: UnsentText) {
+        sendTick++
+        Outbox.sendAnyway(getApplication(), entry.id)
     }
 
     /** "Discard" on an unsent text's row. */

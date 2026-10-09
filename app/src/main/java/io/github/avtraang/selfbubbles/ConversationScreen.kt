@@ -455,6 +455,7 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 UnsentStrip(
                     rows = unsentRows,
                     onSendAgain = { vm.sendAgain(it); Sfx.playSend(ctx) },
+                    onSendAnyway = { vm.sendAnyway(it); Sfx.playSend(ctx) },
                     onCopy = { copyUnsentText(ctx, it.text) },
                     onDiscard = { vm.discardUnsent(it) },
                 )

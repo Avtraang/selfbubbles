@@ -107,19 +107,52 @@ object Outbox {
         init(context)
         val now = System.currentTimeMillis()
         lastId = nextOutboxId(held.value, lastId, now)
-        val entry = UnsentText(lastId, chatGuid, chatTitle, text, replyToGuid, createdAtMillis = now)
+        // Its send id is made here and written with it: every send of this text carries it (SendIds.kt).
+        val entry = UnsentText(lastId, chatGuid, chatTitle, text, replyToGuid, createdAtMillis = now, sendId = newSendId())
         // Written before the request starts: a process that dies right after the tap still finds the text.
         change(onDiskNow = true) { outboxAdd(it, entry) }
         return deliver(entry.id)
     }
 
-    /** "Send again" on the text [id]; nothing happens while it is already in flight. */
+    /**
+     * "Send again" on the text [id]: the same message under the same id;
+     * nothing happens while it is already in flight. A text that may have
+     * gone out is sent only to a relay that keeps send ids, which is asked
+     * first ([sendAgainPlan]): such a relay cannot deliver the same id twice.
+     * Otherwise nothing is sent, and the row offers "Send anyway".
+     */
     fun sendAgain(context: Context, id: Long) {
         init(context)
         val entry = held.value.firstOrNull { it.id == id } ?: return
         if (entry.sending) return
         // Written first, like a new text: the file must not still call it "not sent" once this send is out.
         change(onDiskNow = true) { outboxRetry(it, id) }
+        if (entry.certainlyNotSent) {
+            deliver(id)
+            return
+        }
+        scope.launch {
+            val keepsIds = runCatching { Api.relayKeepsSendIds() }.getOrNull()
+            when (sendAgainPlan(entry, keepsIds)) {
+                SendAgainPlan.SEND -> deliver(id)
+                SendAgainPlan.RELAY_CANNOT_TELL -> change { outboxSettle(it, id, UnsentWhy.RELAY_UNSURE) }
+                SendAgainPlan.COULD_NOT_ASK -> {
+                    change { outboxSettle(it, id, entry.why ?: UnsentWhy.NO_ANSWER) }
+                    app?.let { a -> runCatching { Toast.makeText(a, SEND_AGAIN_COULD_NOT_ASK, Toast.LENGTH_LONG).show() } }
+                }
+            }
+        }
+    }
+
+    /**
+     * "Send anyway" on the text [id], after the owner confirmed the warning:
+     * a new message under a new id, which may arrive next to the first one.
+     */
+    fun sendAnyway(context: Context, id: Long) {
+        init(context)
+        val entry = held.value.firstOrNull { it.id == id } ?: return
+        if (entry.sending) return
+        change(onDiskNow = true) { outboxSendAnyway(it, id, newSendId()) }
         deliver(id)
     }
 
@@ -136,7 +169,7 @@ object Outbox {
         val startedAt = System.currentTimeMillis()
         // An ordinary send answers before this fires; one that waits on the Mac gets a "Sending…" row.
         val slow = launch { delay(OUTBOX_SLOW_MILLIS); change { outboxMarkSlow(it, id) } }
-        val sent = runCatching { Api.send(entry.chatGuid, entry.text, entry.replyToGuid) }
+        val sent = runCatching { Api.send(entry.chatGuid, entry.text, entry.replyToGuid, entry.sendId.ifBlank { null }) }
         slow.cancel()
         val via = sent.getOrNull()
         val why = if (via != null) null else unsentWhyFor(sent.exceptionOrNull())

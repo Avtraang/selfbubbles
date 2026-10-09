@@ -97,6 +97,13 @@ enum class UnsentWhy(val certain: Boolean) {
     SERVER_ERROR(false),
     /** The app's process ended while the send was in flight ([outboxAfterRestart]). */
     INTERRUPTED(false),
+    /**
+     * The relay knows this send by its id and cannot say what became of it:
+     * its engine gave no answer, or the relay stopped in the middle. It will
+     * not send it under that id again. Also set without asking for the send,
+     * when "Send again" finds a relay that keeps no ids ([sendAgainPlan]).
+     */
+    RELAY_UNSURE(false),
 }
 
 /** A failure before anything was written to the relay: no address, nothing listening, no trusted certificate. */
@@ -140,6 +147,9 @@ fun unsentWhyFor(httpCode: Int, html: Boolean): UnsentWhy = when {
 fun unsentWhyFor(error: Throwable?): UnsentWhy = when {
     error == null -> UnsentWhy.NO_ANSWER
     error is SendFailedException -> when {
+        // The relay's own reasons (SendIds.kt) say more than their status does.
+        error.relayCode == RELAY_CODE_OUTCOME_UNKNOWN -> UnsentWhy.RELAY_UNSURE
+        error.relayCode == RELAY_CODE_ID_REUSED || error.relayCode == RELAY_CODE_IDS_UNAVAILABLE -> UnsentWhy.REFUSED
         error.httpCode != null -> unsentWhyFor(error.httpCode, error.html)
         error.reason == SendFailure.TOO_LARGE -> UnsentWhy.TOO_LARGE
         else -> UnsentWhy.NO_ANSWER
@@ -170,6 +180,7 @@ private fun unconfirmedHead(why: UnsentWhy): String = when (why) {
     UnsentWhy.CONNECTION_LOST -> "Connection lost before the relay answered"
     UnsentWhy.SERVER_ERROR -> "The relay's address answered with a server error"
     UnsentWhy.INTERRUPTED -> "The app closed before the relay answered"
+    UnsentWhy.RELAY_UNSURE -> "The relay cannot tell whether this was sent"
     else -> "No answer from the relay"
 }
 
@@ -240,6 +251,8 @@ data class UnsentText(
     val attempts: Int = 1,
     val createdAtMillis: Long = 0,
     val maybeSent: Boolean = false,
+    /** The id every send of this text carries ([newSendId]); blank for a text stored by a build from before the id. */
+    val sendId: String = "",
     @Transient val slow: Boolean = false,
 ) {
     val sending: Boolean get() = why == null
