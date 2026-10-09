@@ -152,6 +152,36 @@ private fun UnsentRow(
 }
 
 /**
+ * Above the composer when the open chat could not be read (ChatLoading.kt):
+ * what is on the screen stays as it is, and Retry reads the chat again. It
+ * goes by itself when a read succeeds, for instance after a reconnect.
+ */
+@Composable
+fun ChatLoadFailedStrip(onRetry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = Dimens.screenGutter, end = Spacing.sm, top = Spacing.xs, bottom = Spacing.xs)
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Warning, contentDescription = null,
+                tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(Dimens.iconSmall),
+            )
+            Spacer(Modifier.width(Spacing.sm))
+            Text(
+                CHAT_LOAD_FAILED_MESSAGE,
+                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onRetry) { Text(CHAT_LOAD_RETRY_LABEL) }
+        }
+        HorizontalDivider(thickness = Dimens.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+/**
  * At the top of the conversation list: one row per chat that holds a text
  * which was not sent or may not have been ([unsentChats]), whether or not that
  * chat is in the list on screen (it may be pinned, archived, or belong to a

@@ -452,6 +452,8 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 // Spec C9: a hairline separates the messages from the composer area
                 // (reply banner, warning strip, field and attachment panel).
                 HorizontalDivider(thickness = Dimens.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+                // The chat could not be read: said here, with Retry; what is shown above stays (ChatLoading.kt).
+                if (chatLoadFailureShows(vm.chatLoad)) ChatLoadFailedStrip(onRetry = { vm.retryChatLoad() })
                 UnsentStrip(
                     rows = unsentRows,
                     onSendAgain = { vm.sendAgain(it); Sfx.playSend(ctx) },

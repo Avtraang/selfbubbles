@@ -151,7 +151,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         threads.value = emptyList()
         if (current != null) {
             current = null
-            messages.value = emptyList()
+            hold(chatLeft())
             resetPaging()
             Notifs.openChat = null
         }
@@ -179,15 +179,57 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         // it: the reset drops any older page still in flight, which would otherwise
         // be merged into the fresh list and leave a gap below it.
         resetPaging()
-        val req = PageRequest(c.chat_guid, pagingGeneration)
-        viewModelScope.launch {
-            runCatching { Api.messages(c.chat_guid) }.onSuccess {
-                if (pageStillApplies(req, current?.chat_guid, pagingGeneration)) {
-                    messages.value = it
-                    hasOlder = pageHasOlder(it)
-                }
-            }
+        readOpenChat(c.chat_guid, PageRequest(c.chat_guid, pagingGeneration))
+    }
+
+    // ---- reading the open chat (ChatLoading.kt) ----
+
+    /** Whether the open chat's latest page is being read, or could not be: the screen shows a failure with Retry. */
+    var chatLoad by mutableStateOf(ChatLoad.IDLE); private set
+
+    /** The open chat has not been read successfully since it was opened: the first page that lands marks it read. */
+    private var firstReadOwed = false
+
+    private fun held() = ChatPage(messages.value, chatLoad)
+
+    private fun hold(page: ChatPage<Msg>) {
+        if (page.messages !== messages.value) messages.value = page.messages
+        chatLoad = page.load
+    }
+
+    /**
+     * Reads the open chat's latest page: when it is opened, after a reconnect,
+     * and on Retry. A read that fails takes nothing off the screen and is
+     * shown ([chatLoadEnded]); it used to be swallowed, which left a chat
+     * opened without a connection blank and silent.
+     */
+    private fun readOpenChat(guid: String, req: PageRequest) = viewModelScope.launch {
+        hold(chatLoadStarted(held()))
+        val page = runCatching { Api.messages(guid) }.getOrNull()
+        // A page, or a failure, that lands after another chat was opened (or this one was
+        // left, or a newer read started) is dropped whole: it can neither overwrite that
+        // chat's list or state nor feed its smallest rowid to the next loadOlder().
+        if (!pageStillApplies(req, current?.chat_guid, pagingGeneration)) return@launch
+        hold(chatLoadEnded(held(), page))
+        if (page == null) return@launch
+        hasOlder = pageHasOlder(page)
+        if (firstReadOwed) {
+            firstReadOwed = false
+            markRead(guid, page.maxOfOrNull { m -> m.rowid } ?: (current?.last_rowid ?: 0))
+            autoTranslateThread()
         }
+    }
+
+    /** Another read of the open chat just succeeded (after a send): a failure shown from an earlier read is over. */
+    private fun chatWasRead() {
+        if (chatLoad == ChatLoad.FAILED) chatLoad = ChatLoad.IDLE
+    }
+
+    /** "Retry" on the failure strip: read the open chat again. */
+    fun retryChatLoad() {
+        val c = current ?: return
+        resetPaging()
+        readOpenChat(c.chat_guid, PageRequest(c.chat_guid, pagingGeneration))
     }
 
     private fun socketMessage(msg: Msg) {
@@ -417,15 +459,18 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     fun consumeDraftAppend(d: DraftAppend) { if (draftAppend == d) draftAppend = null }
 
     fun open(t: Thread) {
-        if (current?.chat_guid != t.chat_guid) {
+        val sameChat = current?.chat_guid == t.chat_guid
+        if (!sameChat) {
             // Another chat takes the screen (a notification tap over an open chat): what
             // belonged to the one before goes with it. Its messages would otherwise stay
             // under the new chat's name until, and unless, the new first page lands, and a
             // reply started there would be sent into this chat (replyTargetGuid).
-            messages.value = emptyList()
             cancelReply()
             endEdit()          // edit mode belongs to the chat it was started in, like the reply
         }
+        // The chat that is already open keeps what it shows while it is read again (chatOpening).
+        hold(chatOpening(held(), sameChat))
+        firstReadOwed = true
         current = threads.value.firstOrNull { it.chat_guid == t.chat_guid }
             ?.let { t.withLabelsFrom(it) } ?: t
         showInfo = false
@@ -437,18 +482,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         Notifs.clear(getApplication(), t.chat_guid)
         Notifs.clearUnsent(getApplication(), t.chat_guid)
         ConversationShortcuts.pushUsage(getApplication(), t.chat_guid)
-        viewModelScope.launch {
-            runCatching { Api.messages(t.chat_guid) }.onSuccess {
-                // A first page that lands after another chat was opened (or this one was
-                // left) is dropped whole, so it can neither overwrite that chat's list nor
-                // feed its smallest rowid to the next loadOlder().
-                if (!pageStillApplies(req, current?.chat_guid, pagingGeneration)) return@onSuccess
-                messages.value = it
-                hasOlder = pageHasOlder(it)
-                markRead(t.chat_guid, it.maxOfOrNull { m -> m.rowid } ?: t.last_rowid)
-                autoTranslateThread()
-            }
-        }
+        readOpenChat(t.chat_guid, req)
         // A text here whose send ended without an answer a moment ago (the app was closed over it): its
         // row says "check the chat" while the Mac may still be sending, so the chat is read again for a while.
         recheckOnOpenSince(Outbox.texts.value, t.chat_guid, System.currentTimeMillis())?.let { recheckChat(t.chat_guid, it) }
@@ -507,7 +541,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     fun back() {
         if (composing) { composing = false; return }
         if (showInfo) { showInfo = false; media.value = null; mediaError = false; return }
-        current = null; messages.value = emptyList()
+        current = null; hold(chatLeft()); firstReadOwed = false
         cancelReply()      // a reply belongs to the chat it was started in
         endEdit()          // and so does edit mode
         resetPaging()
@@ -841,6 +875,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
                 }
                 if (got != null && current?.chat_guid == t.chat_guid) {
                     messages.value = got
+                    chatWasRead()
                     scrollTick++
                 }
             }
@@ -864,6 +899,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
             if (current?.chat_guid != guid) return@launch
             val page = runCatching { Api.messages(guid) }.getOrNull() ?: continue
             if (current?.chat_guid != guid) return@launch
+            chatWasRead()
             if (messages.value.isEmpty()) {
                 messages.value = page
                 hasOlder = pageHasOlder(page)
