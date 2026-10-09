@@ -68,8 +68,12 @@ object Notifs {
         val guid: String? = null,
     )
 
-    /** Recent messages per chat, so the shade shows the thread, not just the last line. */
-    private val history = HashMap<String, MutableList<Line>>()
+    /**
+     * Recent messages per chat, so the shade shows the thread, not just the last line.
+     * A chat's lines are written by the push handler only; [clear] drops a chat from
+     * another thread, also while the handler is fetching that chat's picture.
+     */
+    private val history = java.util.concurrent.ConcurrentHashMap<String, MutableList<Line>>()
 
     /** Set by MainActivity: a push for the chat that is on screen in the foreground
      *  is noise (the WebSocket already showed it), so it is not notified. */
@@ -180,23 +184,36 @@ object Notifs {
         return b.build()
     }
 
+    /**
+     * The shared client with a limit on the whole call: a picture for a
+     * notification is fetched inside the push handler, where a slow but steady
+     * download would otherwise hold up every notification behind it. Same
+     * connection pool and the same token rule as [http].
+     */
+    private val notifImageHttp by lazy {
+        http.newBuilder().callTimeout(NOTIF_IMAGE_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS).build()
+    }
+
     /** Downloads a relay-served image so the notification can display it.
      *  The system UI reads it via FileProvider; the relay URL needs our auth
-     *  token, which the shared client adds for relay-origin URLs only. */
-    private fun fetchImage(ctx: Context, url: String): Uri? = runCatching {
+     *  token, which the shared client adds for relay-origin URLs only.
+     *  Null when it is not there within [NOTIF_IMAGE_TIMEOUT_SECONDS] or is
+     *  larger than [NOTIF_IMAGE_MAX_BYTES]: the notification stays without it. */
+    private fun fetchImage(ctx: Context, url: String, givenUpOn: () -> Boolean): Uri? = runCatching {
         val dir = File(ctx.cacheDir, "shared").apply { mkdirs() }
         dir.listFiles()?.forEach {
             if (System.currentTimeMillis() - it.lastModified() > 86_400_000) it.delete()
         }
         val f = File(dir, "notif-${System.currentTimeMillis()}.img")
-        val ok = http.newCall(Request.Builder().url(url).build()).execute().use { r ->
-            if (!r.isSuccessful) false
-            else {
-                f.outputStream().use { o -> r.body!!.byteStream().copyTo(o) }
-                true
+        val ok = runCatching {
+            notifImageHttp.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                r.isSuccessful && f.outputStream().use { o -> copyCapped(r.body!!.byteStream(), o, NOTIF_IMAGE_MAX_BYTES) }
             }
+        }.getOrDefault(false)
+        if (!ok || givenUpOn()) {
+            f.delete()                      // nothing half-fetched, or fetched too late to be shown, stays in the cache
+            return@runCatching null
         }
-        if (!ok) return@runCatching null
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f)
         ctx.grantUriPermission(
             "com.android.systemui", uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
@@ -229,22 +246,11 @@ object Notifs {
         val isGroup = pushIsGroup(group, chatName, sender)
         val title = pushChatTitle(isGroup, chatName, sender)
 
-        val imgUri = imageUrl?.let { fetchImage(ctx, BASE + it) }
-        lines.add(Line(sender.ifBlank { chatName }, text,
-                       System.currentTimeMillis(), imgUri, imageMime, guid))
+        // The line goes into the history before its picture is fetched: a second push for
+        // the same message is still recognised, and the notification does not wait for it.
+        val line = Line(sender.ifBlank { chatName }, text, System.currentTimeMillis(), null, imageMime, guid)
+        lines.add(line)
         while (lines.size > 8) lines.removeAt(0)
-
-        val me = Person.Builder().setName("You").setKey("me").build()
-        val style = NotificationCompat.MessagingStyle(me)
-        style.isGroupConversation = isGroup
-        if (isGroup) style.conversationTitle = title
-        for (line in lines) {
-            val m = NotificationCompat.MessagingStyle.Message(
-                line.text, line.time, person(ctx, line.sender),
-            )
-            if (line.img != null) m.setData(line.mime, line.img)
-            style.addMessage(m)
-        }
 
         // Tapping the notification opens the app on that conversation.
         val open = Intent(ctx, MainActivity::class.java).apply {
@@ -314,22 +320,77 @@ object Notifs {
             ctx, chatGuid, title, isGroup,
         )
 
-        val n = NotificationCompat.Builder(ctx, channelId)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setStyle(style)
-            .setShortcutId(shortcutId)
-            .setLocusId(LocusIdCompat(shortcutId))
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setContentIntent(openPending)
-            .apply { copyAction?.let { addAction(it) } }
-            .addAction(readAction)
-            .addAction(replyAction)
-            .setOnlyAlertOnce(false)
-            .build()
+        // Puts the chat's notification up from [held]. [alert]: a new message alerts; the
+        // same message getting its picture does not.
+        fun post(alert: Boolean, held: List<Line>) {
+            val me = Person.Builder().setName("You").setKey("me").build()
+            val style = NotificationCompat.MessagingStyle(me)
+            style.isGroupConversation = isGroup
+            if (isGroup) style.conversationTitle = title
+            for (l in held) {
+                val m = NotificationCompat.MessagingStyle.Message(l.text, l.time, person(ctx, l.sender))
+                if (l.img != null) m.setData(l.mime, l.img)
+                style.addMessage(m)
+            }
+            val n = NotificationCompat.Builder(ctx, channelId)
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setStyle(style)
+                .setShortcutId(shortcutId)
+                .setLocusId(LocusIdCompat(shortcutId))
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(openPending)
+                .apply { copyAction?.let { addAction(it) } }
+                .addAction(readAction)
+                .addAction(replyAction)
+                .setOnlyAlertOnce(!alert)
+                .build()
+            runCatching { NotificationManagerCompat.from(ctx).notify(id, n) }
+        }
 
-        runCatching { NotificationManagerCompat.from(ctx).notify(id, n) }
+        // The text first; the picture when it is there (postThenDecorate, PushDelivery.kt).
+        postThenDecorate(
+            hasPicture = !imageUrl.isNullOrBlank(),
+            post = { picture: Uri?, alert ->
+                if (picture == null) {
+                    // The message itself is always shown, from the lines this push started with,
+                    // as it always was: also when the chat was cleared a moment ago.
+                    post(alert, lines)
+                } else {
+                    val held = history[chatGuid]
+                    val at = held?.indexOfFirst { it === line } ?: -1
+                    if (held != null && at >= 0) {
+                        held[at] = line.copy(img = picture)
+                        post(alert, held)
+                    }
+                }
+            },
+            // On a thread of its own, with a limit on the whole wait: the call's own limit does
+            // not cover a name lookup that stalls (withinDeadline, PushDelivery.kt).
+            fetch = {
+                withinDeadline((NOTIF_IMAGE_TIMEOUT_SECONDS + 1) * 1000) { givenUpOn -> fetchImage(ctx, BASE + imageUrl, givenUpOn) }
+            },
+            // Read, opened or swiped away while the picture was on its way: it is not put back.
+            stillShown = { history[chatGuid]?.any { it === line } == true && isShown(ctx, id) },
+        )
+    }
+
+    /**
+     * Whether the notification [id] is in the shade now. One that was posted a
+     * moment ago may not be listed yet (a picture on a fast link is there within
+     * milliseconds), so a notification that is not listed is asked about a few
+     * more times before it counts as gone. Where the system does not say, it is
+     * taken to be shown. Called on the push handler's thread only.
+     */
+    private fun isShown(ctx: Context, id: Int): Boolean {
+        val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        repeat(NOTIF_LISTED_CHECKS) { attempt ->
+            val listed = runCatching { mgr.activeNotifications.any { it.id == id && it.tag == null } }.getOrElse { return true }
+            if (listed) return true
+            if (attempt < NOTIF_LISTED_CHECKS - 1) runCatching { java.lang.Thread.sleep(NOTIF_LISTED_PAUSE_MILLIS) }   // the app has a Thread of its own: a conversation
+        }
+        return false
     }
 }
 
@@ -449,20 +510,26 @@ object Push {
         val messaging = runCatching { FirebaseMessaging.getInstance() }
             .onFailure { Log.w(TAG, "Firebase initialised but FirebaseMessaging is unavailable; push is off", it) }
             .getOrNull() ?: return
-        messaging.token.addOnSuccessListener { tok ->
-            scope.launch {
-                runCatching { Api.registerPush(tok) }
-            }
-        }
+        messaging.token
+            .addOnSuccessListener { tok -> scope.launch { handToRelay(tok) } }
+            // The class names only: a Firebase failure can quote the project it was asked about.
+            .addOnFailureListener { Log.w(TAG, "no push token from Firebase (${failureLabel(it)}); push stays as it was") }
+    }
+
+    /**
+     * One attempt to register [token] with the relay. A refusal or a failure
+     * is logged (pushRegistrationLogLine: a status or class names, never the
+     * token); the next connection to the relay tries again (ChatVM.socketOpened).
+     */
+    suspend fun handToRelay(token: String) {
+        pushRegistrationLogLine(runCatching { Api.registerPush(token) })?.let { Log.w(TAG, it) }
     }
 }
 
 class PushService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
-        CoroutineScope(Dispatchers.IO).launch {
-            runCatching { Api.registerPush(token) }
-        }
+        CoroutineScope(Dispatchers.IO).launch { Push.handToRelay(token) }
     }
 
     override fun onMessageReceived(msg: RemoteMessage) {

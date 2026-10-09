@@ -1065,11 +1065,13 @@ object Api {
         }
     }
 
-    suspend fun registerPush(token: String): Boolean = withContext(Dispatchers.IO) {
+    /** Hands this phone's push token to the relay; what answered, and whether it was the relay (pushRegistrationLogLine reads it). */
+    suspend fun registerPush(token: String): PushRegistrationAnswer = withContext(Dispatchers.IO) {
         val body = json.encodeToString(PushReq(token))
             .toRequestBody("application/json".toMediaType())
         val req = Request.Builder().url("$BASE/register_push").post(body).build()
-        http.newCall(req).execute().use { it.isSuccessful }
+        // The relay's answer is a few bytes; a page served in its place is not read past the first 4 KB.
+        http.newCall(req).execute().use { PushRegistrationAnswer(it.code, isRelayOk(it.peekBody(4096).string())) }
     }
 }
 

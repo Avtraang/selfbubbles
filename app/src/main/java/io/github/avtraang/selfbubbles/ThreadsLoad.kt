@@ -168,6 +168,17 @@ fun relayMoved(heldBase: String, newBase: String): Boolean = heldBase != newBase
 fun threadsLoadApplies(loadedFrom: String, heldBase: String): Boolean = loadedFrom == heldBase
 
 /**
+ * Whether the list that the load numbered [load] brought may replace the one on
+ * screen, which the load numbered [shown] brought (0: none yet). Loads overlap
+ * and their answers can arrive in the other order: one message for the open
+ * chat starts a load at once and another after the chat was marked read, and
+ * the relay answers each only after it has asked Beeper. A list from a load
+ * started before the one on screen is an older picture of the relay and is
+ * dropped. The numbers only grow, also across a change of relay.
+ */
+fun threadListApplies(load: Int, shown: Int): Boolean = load > shown
+
+/**
  * How long the list waits for its first load before it says that it is loading.
  * An ordinary launch has its list well inside this, so it never shows the row
  * (nothing flashes in front of the list); a load still in flight after it is one

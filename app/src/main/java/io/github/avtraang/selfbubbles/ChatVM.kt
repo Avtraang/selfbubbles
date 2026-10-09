@@ -68,6 +68,9 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     /** Loads are numbered in the order they start; this is the one started last. */
     private var threadsLoadSeq = 0
 
+    /** The load whose list is on screen (0: none yet). An answer from an earlier load is not shown ([threadListApplies]). */
+    private var threadsShownLoad = 0
+
     /**
      * The load started last when the list last began waiting with nothing to go
      * by ([threadsLoadPending]). That load and every earlier one was started
@@ -173,6 +176,9 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     )
 
     private fun socketOpened() {
+        // The relay is reachable now, whatever it was when the app started, and whatever it has
+        // forgotten since. It keeps a set, so a repeat changes nothing there (PushWiringTest pins this call).
+        if (isConfigured) Push.registerWithRelay(getApplication(), viewModelScope)
         refreshThreads()
         val c = current ?: return
         // The reconnect reloads the latest page only, so paging starts over from
@@ -258,7 +264,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
     fun refreshThreads() = viewModelScope.launch {
         val load = threadsLoadStarted()
         val from = RelayConfigStore.current.base
-        val result = runCatching { Api.threads() }.onSuccess { showThreads(from, it) }
+        val result = runCatching { Api.threads() }.onSuccess { showThreads(load, from, it) }
         threadsLoadEnded(load, result.exceptionOrNull())
         threadsLoaded.value = true
     }
@@ -268,10 +274,14 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
      * still the relay in force ([threadsLoadApplies]): a load that was in flight
      * to the previous address when Settings saved another one would otherwise
      * put the old relay's conversations back into the list just emptied for the
-     * new one ([leaveRelay]).
+     * new one ([leaveRelay]). Nor is it shown when a load started after [load]
+     * has already brought its list ([threadListApplies]): answers can overtake
+     * one another, and the older picture of the relay must not replace the newer.
      */
-    private fun showThreads(loadedFrom: String, list: List<Thread>) {
+    private fun showThreads(load: Int, loadedFrom: String, list: List<Thread>) {
         if (!threadsLoadApplies(loadedFrom, RelayConfigStore.current.base)) return
+        if (!threadListApplies(load, threadsShownLoad)) return
+        threadsShownLoad = load
         threads.value = list; syncCurrentLabels(list); publishShortcuts(list)
     }
 
@@ -321,7 +331,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
             runCatching { Api.refreshContacts() }
             val load = threadsLoadStarted()
             val from = RelayConfigStore.current.base
-            val result = runCatching { Api.threads() }.onSuccess { showThreads(from, it) }
+            val result = runCatching { Api.threads() }.onSuccess { showThreads(load, from, it) }
             threadsLoadEnded(load, result.exceptionOrNull())
             threadsLoaded.value = true
             refreshing = false

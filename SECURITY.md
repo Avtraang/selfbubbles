@@ -271,7 +271,8 @@ without that file it never initialises and the app relies on its WebSocket
 while open (`app/build.gradle.kts`; `PushService.kt`, where
 `Push.settingsNote` explains which in Settings). When push is active, the
 app registers its FCM token with the relay (`POST /register_push`) each time
-it starts and each time a Save or a Reset changes the relay settings.
+it starts, each time a Save or a Reset changes the relay settings, and each
+time its live connection to the relay opens.
 
 A push is a data message built by the relay: the chat identifier (for a
 one-to-one chat that is the other person's phone number or email address),

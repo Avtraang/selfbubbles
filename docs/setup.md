@@ -1034,7 +1034,8 @@ author's is shared.
    `[fcm] initialized — push enabled`.
 
 The app registers its device token with the relay (`/register_push`) each
-time it starts and each time a Save or a Reset changes the relay settings, so
+time it starts, each time a Save or a Reset changes the relay settings, and
+each time its live connection to the relay opens, so
 a relay entered on the first-run form is registered at Save;
 `relay.log` then shows `[fcm] registered device token (1 total)`, once per new
 token. Android's notification permission from step 4.1 must be granted. The
