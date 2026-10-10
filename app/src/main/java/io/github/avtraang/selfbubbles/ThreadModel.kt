@@ -14,6 +14,8 @@ fun Thread.withLabelsFrom(f: Thread) = copy(
 // chats whose service the relay reports as SMS or RCS.
 fun isTextThread(t: Thread?) = t?.network == "gmessages" || t?.service == "SMS" || t?.service == "RCS"
 fun isTextMsg(m: Msg) = isSms(m.network) || m.service == "SMS" || m.service == "RCS"
+/** A chat or message identifier of the Google Messages bridge ("bp:…"): tells the kind of chat before the relay's labels do. */
+fun isBridgeId(id: String?): Boolean = id?.startsWith("bp:") == true
 
 internal val TAPBACK_EMOJI = listOf("\u2764\uFE0F", "\uD83D\uDC4D", "\uD83D\uDC4E", "\uD83D\uDE02", "\u203C\uFE0F", "\u2753")
 internal val URL_REGEX = Regex("""https?://\S+""")

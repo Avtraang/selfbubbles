@@ -12,12 +12,14 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -31,6 +33,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.content.MediaType
@@ -55,6 +58,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.max
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -232,6 +237,8 @@ fun Conversation(vm: ChatVM, t: Thread) {
     var attachPanel by remember { mutableStateOf(false) }
     // Nothing can be attached to an edit: the panel closes when edit mode starts and its button is off meanwhile.
     LaunchedEffect(edit != null) { if (edit != null) attachPanel = false }
+    // The effect picker (EffectPicker.kt), opened by a long press on Send in an iMessage chat.
+    var effectPicker by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
     // ---- search in this chat (InChatSearch.kt) ----
@@ -609,20 +616,20 @@ fun Conversation(vm: ChatVM, t: Thread) {
                             strokeWidth = Dimens.progressStroke,
                         )
                     }
-                } else FilledIconButton(
+                } else SendButton(
                     onClick = {
                         val text = input.text.toString()
                         if (edit != null) { vm.submitEdit(text); settleComposer() }
                         else if (text.isNotBlank()) { vm.send(text); input.clearText(); Sfx.playSend(ctx) }
                     },
+                    // A long press opens the effect picker (EffectPicker.kt): in an iMessage chat, never for an
+                    // edit. SMS/RCS and Google Messages have no effects, so there the button takes a tap only.
+                    onLongClick = if (edit == null && offersEffects(vm.current)) ({ effectPicker = true }) else null,
                     enabled = if (edit != null) edit.canSubmit else hasText,
-                    modifier = Modifier.minimumInteractiveComponentSize().size(Dimens.sendButton),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = if (textThread) msgColors.bubbleSms else msgColors.bubbleIMessage,
-                        contentColor = if (textThread) msgColors.onBubbleSms else msgColors.onBubbleIMessage,
-                        disabledContainerColor = scheme.surfaceContainerHigh,
-                        disabledContentColor = scheme.onSurfaceVariant,
-                    ),
+                    containerColor = if (textThread) msgColors.bubbleSms else msgColors.bubbleIMessage,
+                    contentColor = if (textThread) msgColors.onBubbleSms else msgColors.onBubbleIMessage,
+                    disabledContainerColor = scheme.surfaceContainerHigh,
+                    disabledContentColor = scheme.onSurfaceVariant,
                 ) {
                     if (edit != null) Icon(Icons.Filled.Check, contentDescription = "Save edit", modifier = Modifier.size(Dimens.iconSmall))
                     else Icon(ArrowUpward, contentDescription = "Send", modifier = Modifier.size(Dimens.iconSmall))
@@ -662,6 +669,10 @@ fun Conversation(vm: ChatVM, t: Thread) {
         // iMessage-style. Springs back on release.
         var peekPx by remember { mutableFloatStateOf(0f) }
         val peek = with(LocalDensity.current) { peekPx.toDp() }
+        // The chat's effect engine (EffectPlayer.kt): the bubbles reach it through LocalEffectController to play
+        // their effect on first sight and on Replay. A Bubble composed anywhere else gets the no-op default.
+        val effects = rememberEffectController()
+        CompositionLocalProvider(LocalEffectController provides effects) {
         LazyColumn(
             // pad already reaches the top of the bottom bar (keyboard included).
             Modifier.padding(pad).consumeWindowInsets(pad).fillMaxSize()
@@ -702,6 +713,11 @@ fun Conversation(vm: ChatVM, t: Thread) {
                     Modifier.fillMaxWidth().then(
                         if (tint > 0f) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = tint)) else Modifier
                     )
+                    // The list draws its items in index order, so a bubble swelling under Loud or landing from
+                    // Slam's 2.5x would be painted over by the row above it (older, drawn later). While its effect
+                    // plays the row draws over its neighbours, as on iOS; this Box is the list's child, so the
+                    // zIndex orders it among the other rows (one deeper inside Bubble would only order its own parts).
+                    .then(if (effects.bubblePlay(m.guid) != null) Modifier.zIndex(1f) else Modifier)
                 ) {
                 Bubble(m, reactions[m.guid], firstInRun = first, lastInRun = last,
                        peek = peek, onOpenImage = { fullscreen = it },
@@ -731,6 +747,10 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 }
             }
         }
+        }
+        // The screen effects (Confetti, Lasers, ...) play here, over the list and under the search overlay, while
+        // the controller holds one; nothing is composed otherwise, and nothing here takes a touch from the list.
+        ScreenEffectOverlay(effects, Modifier.padding(pad).consumeWindowInsets(pad).fillMaxSize())
         // The hits lie over the messages while there is a query to show them for; an
         // emptied query uncovers the list again. The list stays composed underneath, so
         // the jump can scroll it before the overlay goes.
@@ -816,6 +836,50 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 }
             },
         )
+    }
+
+    if (effectPicker) {
+        // Choosing an effect sends the typed text with it, exactly as a tap on Send sends it without one.
+        EffectPicker(
+            onDismiss = { effectPicker = false },
+            onPick = { effect ->
+                val text = input.text.toString()
+                if (text.isNotBlank()) { vm.send(text, effect); input.clearText(); Sfx.playSend(ctx) }
+            },
+        )
+    }
+}
+
+/**
+ * The send circle (spec C5): a 36dp filled circle in a 48dp slot, the look FilledIconButton gave
+ * it, drawn by hand because Material's icon buttons take a tap only and this one also takes a long
+ * press, which opens the effect picker ([onLongClick]; null where effects are not offered, and a
+ * long press then does nothing). The colors are the button's as before: the thread's bubble pair
+ * when there is something to send, the quiet disabled pair otherwise.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SendButton(
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    enabled: Boolean,
+    containerColor: Color,
+    contentColor: Color,
+    disabledContainerColor: Color,
+    disabledContentColor: Color,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        Modifier.minimumInteractiveComponentSize().size(Dimens.sendButton).clip(CircleShape)
+            .background(if (enabled) containerColor else disabledContainerColor)
+            .combinedClickable(
+                enabled = enabled, role = Role.Button,
+                onLongClickLabel = onLongClick?.let { "Send with an effect" }, onLongClick = onLongClick,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        CompositionLocalProvider(LocalContentColor provides (if (enabled) contentColor else disabledContentColor)) { content() }
     }
 }
 

@@ -101,14 +101,16 @@ object Outbox {
      * Sends [text] into [chatGuid]. It is in the outbox, and in the file,
      * before its request starts; the returned job ends when the send has, well
      * or not. [chatTitle] is the chat's name for a toast or notification about
-     * it, [replyToGuid] the message it replies to.
+     * it, [replyToGuid] the message it replies to, [effect] the iMessage effect
+     * it is sent with when one was chosen (MessageEffects.kt): stored with the
+     * text, so "Send again" and "Send anyway" ask for it too.
      */
-    fun send(context: Context, chatGuid: String, chatTitle: String, text: String, replyToGuid: String?): Job {
+    fun send(context: Context, chatGuid: String, chatTitle: String, text: String, replyToGuid: String?, effect: String? = null): Job {
         init(context)
         val now = System.currentTimeMillis()
         lastId = nextOutboxId(held.value, lastId, now)
         // Its send id is made here and written with it: every send of this text carries it (SendIds.kt).
-        val entry = UnsentText(lastId, chatGuid, chatTitle, text, replyToGuid, createdAtMillis = now, sendId = newSendId())
+        val entry = UnsentText(lastId, chatGuid, chatTitle, text, replyToGuid, createdAtMillis = now, sendId = newSendId(), effect = effect)
         // Written before the request starts: a process that dies right after the tap still finds the text.
         change(onDiskNow = true) { outboxAdd(it, entry) }
         return deliver(entry.id)
@@ -169,9 +171,10 @@ object Outbox {
         val startedAt = System.currentTimeMillis()
         // An ordinary send answers before this fires; one that waits on the Mac gets a "Sending…" row.
         val slow = launch { delay(OUTBOX_SLOW_MILLIS); change { outboxMarkSlow(it, id) } }
-        val sent = runCatching { Api.send(entry.chatGuid, entry.text, entry.replyToGuid, entry.sendId.ifBlank { null }) }
+        val sent = runCatching { Api.sendText(entry.chatGuid, entry.text, entry.replyToGuid, entry.sendId.ifBlank { null }, entry.effect) }
         slow.cancel()
-        val via = sent.getOrNull()
+        val reply = sent.getOrNull()
+        val via = reply?.via
         val why = if (via != null) null else unsentWhyFor(sent.exceptionOrNull())
         change { outboxSettle(it, id, why) }
         if (why == null) {
@@ -181,7 +184,7 @@ object Outbox {
             sent.exceptionOrNull()?.let { Log.e("Imsg", sendFailureLogLine("text send", it)) }
             alert(entry, why)
         }
-        ended.tryEmit(TextSendResult(entry.chatGuid, entry.text, via, why, startedAt))
+        ended.tryEmit(TextSendResult(entry.chatGuid, entry.text, via, why, startedAt, reply?.effectSent))
     }
 
     /**

@@ -88,6 +88,17 @@ class SendIdTest {
         assertEquals("""{"chat_guid":"$chat","text":"hello"}""", body(req))
     }
 
+    @Test fun a_text_send_names_its_effect_only_when_one_was_chosen() {
+        // The iMessage effect chosen in the composer (MessageEffects.kt) travels in "effect", beside the id.
+        val slam = "com.apple.MobileSMS.expressivesend.impact"
+        val with = textSendRequest("https://relay.example", chat, "hello", null, "a-send-id-0001", slam)
+        assertTrue(body(with).contains("\"effect\":\"$slam\""))
+        assertTrue(body(with).contains("\"client_id\":\"a-send-id-0001\""))
+        // Without one the key is absent, not null: an older relay sees the body it always saw.
+        assertFalse(body(textSendRequest("https://relay.example", chat, "hello", null, "a-send-id-0001")).contains("effect"))
+        assertFalse(body(textSendRequest("https://relay.example", chat, "hello", null, null, null)).contains("effect"))
+    }
+
     @Test fun the_first_text_of_a_new_conversation_names_its_id_too() {
         val req = newChatRequest("https://relay.example", listOf("+15550100200"), "hello", "a-send-id-0002")
         assertEquals("https://relay.example/create_chat", req.url.toString())

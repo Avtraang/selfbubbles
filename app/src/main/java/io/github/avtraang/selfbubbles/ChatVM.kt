@@ -835,15 +835,17 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
      * outbox and shows above its chat's composer with "Send again" and
      * "Discard"; it is not put back into the composer, which is left as the
      * owner has it. How the send ended comes back through [textSendEnded].
+     * [effect] is the iMessage effect chosen in the composer's picker, when one
+     * was (MessageEffects.kt); it travels with the text through the outbox.
      */
-    fun send(text: String) {
+    fun send(text: String, effect: String? = null) {
         val t = current ?: return
         val target = replyTargetGuid(replyingTo, replyingChat, t.chat_guid)
         cancelReply()
         sendTick++
         // The list's name for the chat when it has one: a chat opened from a notification is a bare stub.
         val listed = threads.value.firstOrNull { it.chat_guid == t.chat_guid } ?: t
-        Outbox.send(getApplication(), t.chat_guid, unsentChatTitle(listed.title, t.chat_guid), text, target)
+        Outbox.send(getApplication(), t.chat_guid, unsentChatTitle(listed.title, t.chat_guid), text, target, effect)
     }
 
     /** "Send again" on an unsent text's row: the same text, replying to the same message, once more. */
@@ -863,11 +865,14 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
 
     /**
      * One text send ended (from the composer, a row's "Send again", or a reply
-     * typed in a notification): the send-path toasts follow its path, and the
-     * open chat is brought up to date where the socket will not do it.
+     * typed in a notification): the send-path toasts follow its path, a text
+     * whose effect did not go with it says so, and the open chat is brought up
+     * to date where the socket will not do it.
      */
     private fun textSendEnded(r: TextSendResult) {
         noteSendPath(r.via)
+        // Delivered by a fallback engine as plain words: the message mattered more than the effect, and the owner is told.
+        effectSendNotice(r.effectSent)?.let { Toast.makeText(getApplication(), it, Toast.LENGTH_LONG).show() }
         val t = current?.takeIf { it.chat_guid == r.chatGuid } ?: return
         if (r.via != null) {
             // gmessages: Beeper's WS doesn't echo our own sends (verified —

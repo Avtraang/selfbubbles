@@ -253,6 +253,8 @@ data class UnsentText(
     val maybeSent: Boolean = false,
     /** The id every send of this text carries ([newSendId]); blank for a text stored by a build from before the id. */
     val sendId: String = "",
+    /** The effect chosen for it (MessageEffects.kt), which every send of this text asks for; null for none. */
+    val effect: String? = null,
     @Transient val slow: Boolean = false,
 ) {
     val sending: Boolean get() = why == null
@@ -396,6 +398,8 @@ data class TextSendResult(
     val via: String?,
     val why: UnsentWhy?,
     val sentAtMillis: Long,
+    /** The relay's word on the effect the text asked for ([effectSendNotice]); null when it said nothing. */
+    val effectSent: Boolean? = null,
 )
 
 /** How the owner is told about a text that was not delivered. */

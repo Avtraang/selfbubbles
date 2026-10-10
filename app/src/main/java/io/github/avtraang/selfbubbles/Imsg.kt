@@ -16,6 +16,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -559,6 +560,10 @@ data class Msg(
     // chat.db message.service ("iMessage", "SMS", "RCS", "iMessageLite"); null
     // for Google Messages rows and for older relays that don't send it.
     val service: String? = null,
+    // chat.db message.expressive_send_style_id: Apple's id of the effect the message
+    // was sent with (MessageEffects.kt); null for one sent without, for Google
+    // Messages rows and for older relays that don't send it.
+    val effect: String? = null,
 )
 
 @Serializable
@@ -631,8 +636,30 @@ data class ContactHit(
     val chat_guid: String, val text: String, val reply_to_guid: String? = null,
     // The send id (SendIds.kt). A null default is left out of the JSON, so a text without one is sent as it always was.
     val client_id: String? = null,
+    // The effect to send with (MessageEffects.kt), left out of the JSON the same way when none was chosen.
+    val effect: String? = null,
 )
-@Serializable private data class SendResp(val ok: Boolean = false, val via: String? = null)
+
+/**
+ * What the relay's own 2xx reply to a send says: the delivery path ([via],
+ * [SEND_VIA_BLUEBUBBLES] when the reply names none) and, for a text that asked
+ * for an effect, whether the effect went with it ([effectSent]: true from
+ * BlueBubbles, false when a fallback engine delivered the words alone). Null
+ * when the reply does not say: no effect was asked for, or an older relay.
+ */
+data class SendReply(val via: String, val effectSent: Boolean?)
+
+/**
+ * [SendReply] read from the body of a 2xx reply ([isRelaySendReply] has already
+ * said it is the relay's). Each key is read on its own, so an `effect_sent` of
+ * an unexpected shape costs that key and not the path.
+ */
+internal fun sendReplyOf(body: String): SendReply {
+    val reply = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+    val via = (reply?.get("via") as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val effectSent = (reply?.get("effect_sent") as? JsonPrimitive)?.booleanOrNull
+    return SendReply(via ?: SEND_VIA_BLUEBUBBLES, effectSent)
+}
 @Serializable private data class ReactReq(val chat_guid: String, val message_guid: String, val reaction: String)
 // part_index has no default on purpose: a default would be left out of the JSON, and the relay's contract names it.
 @Serializable private data class UnsendReq(val chat_guid: String, val guid: String, val part_index: Int)
@@ -674,10 +701,13 @@ fun newChatRequest(base: String, addresses: List<String>, text: String, clientId
 /**
  * The POST for one text send to the relay at [base]. Its body is written at
  * most once ([sentOnce]): a send is not idempotent, and the relay cannot tell a
- * repeated POST from a second message.
+ * repeated POST from a second message. [effect] is the effect to send with,
+ * when one was chosen (MessageEffects.kt); the key is absent otherwise.
  */
-fun textSendRequest(base: String, guid: String, text: String, replyTo: String?, clientId: String? = null): Request {
-    val body = json.encodeToString(SendReq(guid, text, replyTo, clientId))
+fun textSendRequest(
+    base: String, guid: String, text: String, replyTo: String?, clientId: String? = null, effect: String? = null,
+): Request {
+    val body = json.encodeToString(SendReq(guid, text, replyTo, clientId, effect))
         .toRequestBody("application/json".toMediaType())
         .sentOnce()
     return Request.Builder().url("$base/send").post(body).build()
@@ -746,7 +776,8 @@ object Api {
     }
 
     /**
-     * The delivery path the reply to a send names ("bb" when a 2xx names none).
+     * What the reply to a send says ([SendReply]: the delivery path, "bb" when
+     * a 2xx names none, and the relay's word on an effect that was asked for).
      * Anything else throws [SendFailedException] with the status: a non-2xx, or
      * a 2xx that is not the relay's own reply (a web page answered in its
      * place: [isRelaySendReply]), which is a failed send and not a delivery. A
@@ -757,7 +788,7 @@ object Api {
      * ended without an answer. [what] names the call in the exception
      * ("send HTTP 502").
      */
-    private fun sendReplyVia(r: Response, what: String): String {
+    private fun sendReply(r: Response, what: String): SendReply {
         if (!r.isSuccessful) throw sendRefused(r, what)
         val reply = r.body!!.string()
         val type = r.header("Content-Type")
@@ -766,7 +797,7 @@ object Api {
                 SendFailure.OTHER, "$what HTTP ${r.code}, not the relay's reply", r.code, html = looksLikeHtml(type, reply),
             )
         }
-        return runCatching { json.decodeFromString<SendResp>(reply) }.getOrNull()?.via ?: "bb"
+        return sendReplyOf(reply)
     }
 
     /** A status in place of a delivery, with the relay's own reason when its answer names one (never the body itself). */
@@ -785,8 +816,17 @@ object Api {
      * returns; only a caller that reports the failure itself calls this directly.
      */
     suspend fun send(guid: String, text: String, replyTo: String? = null, clientId: String? = null): String =
+        sendText(guid, text, replyTo, clientId, effect = null).via
+
+    /**
+     * [send] with the relay's whole answer ([SendReply]): the path, and for a
+     * text sent with [effect] (MessageEffects.kt) whether the effect went with
+     * it. The outbox's path. An effect the relay refuses (an id it does not
+     * know, a Google Messages chat) is a 422, which throws as any refusal does.
+     */
+    suspend fun sendText(guid: String, text: String, replyTo: String?, clientId: String?, effect: String?): SendReply =
         withContext(Dispatchers.IO) {
-            httpSend.newCall(textSendRequest(BASE, guid, text, replyTo, clientId)).execute().use { r -> sendReplyVia(r, "send") }
+            httpSend.newCall(textSendRequest(BASE, guid, text, replyTo, clientId, effect)).execute().use { r -> sendReply(r, "send") }
         }
 
     /**
@@ -860,7 +900,7 @@ object Api {
                 .build()
                 .sentOnce()
             val req = Request.Builder().url("$BASE/send_attachment").post(body).build()
-            httpUpload.newCall(req).execute().use { r -> sendReplyVia(r, "send_attachment") }
+            httpUpload.newCall(req).execute().use { r -> sendReply(r, "send_attachment").via }
         }
 
     suspend fun react(chatGuid: String, messageGuid: String, reaction: String): Boolean =

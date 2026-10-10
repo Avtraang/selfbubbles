@@ -1146,7 +1146,7 @@ class EditUnsendTest {
             assertTrue("$head ends edit mode", body.any { it.contains("endEdit()") })
         }
         // A send does not: it drops the reply it used and nothing else.
-        assertFalse(vmFunction(vm, "    fun send(text: String) {").any { it.contains("endEdit()") })
+        assertFalse(vmFunction(vm, "    fun send(text: String, effect: String? = null) {").any { it.contains("endEdit()") })
     }
 
     @Test fun aChangeTheRelayConfirmed_keepsItsMark_untilTheRecheckHasEnded() {

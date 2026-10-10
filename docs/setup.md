@@ -929,6 +929,9 @@ already exist, and that is all Messages.app's scripting dictionary offers. The
   - tapbacks (reactions) and threaded replies,
   - starting a new conversation from the app,
   - Undo Send (step 5.7; Edit does not use BlueBubbles),
+  - sending a text with an iMessage effect (a long press on Send in the app;
+    when AppleScript delivers instead, the words go out without the effect and
+    the app says "Sent without the effect"),
   - the FaceTime bridge (below).
 
 SIP off is BlueBubbles' requirement and documented by them, not something

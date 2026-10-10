@@ -249,9 +249,6 @@ const val EDIT_MARGIN_SECONDS = 20L
 /** The placeholder Messages keeps in a text for each attachment. */
 private const val ATTACHMENT_MARK = '￼'
 
-/** A chat or message identifier of the Google Messages bridge. */
-private fun isBridgeId(id: String?): Boolean = id?.startsWith("bp:") == true
-
 /**
  * True for a message with nothing left to show, which is what an unsent
  * message is once the relay's update arrives: no words, no listed attachment,

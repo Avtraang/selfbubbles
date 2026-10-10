@@ -26,15 +26,20 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -87,6 +92,23 @@ internal fun linkified(text: String, linkColor: Color) = buildAnnotatedString {
         last = match.range.last + 1
     }
     if (last < text.length) append(text.substring(last))
+}
+
+/**
+ * The words the bubble of [m] shows in its text bubble, or null for none: the
+ * text without Apple's attachment marks (U+FFFC), trimmed, and not when it is
+ * only the URL of the message's link card, which the card already shows
+ * (Apple's stored URL may carry query params the typed text doesn't,
+ * "...?variant=139407", so the two are compared without the query string).
+ * What Echo rains across the screen, and what Invisible Ink has to hide.
+ */
+// internal for ScreenEffectSpecsTest
+internal fun bubbleBody(m: Msg): String? {
+    val body = m.text?.replace("\uFFFC", "")?.trim()
+    if (body.isNullOrBlank()) return null
+    val link = m.link ?: return body
+    fun bare(u: String?) = u?.trim()?.substringBefore('?')?.trimEnd('/')
+    return if (bare(body).equals(bare(link.url), ignoreCase = true)) null else body
 }
 
 /**
@@ -225,6 +247,20 @@ fun Bubble(
     val recvBg = colors.bubbleReceived
     val recvText = colors.onBubbleReceived
     val withAvatar = !mine && m.is_group && m.sender != null
+    // The chat's effect engine (EffectPlayer.kt); NoEffects anywhere else a bubble is drawn. The first time this
+    // message is on screen (its row composed, which the list does a little ahead of the scroll) its effect plays
+    // by itself when the rules allow (PlaybackRules.autoPlays); after that, Replay on the caption line plays it.
+    val effects = LocalEffectController.current
+    LaunchedEffect(m.guid, m.effect) { effects.playIfUnseen(m) }
+    val play = effects.bubblePlay(m.guid)
+    val fx = rememberBubbleEffect(play, effects, mine)
+    // Whether this message's screen effect is playing over the chat: derived, so only this bubble recomposes when
+    // a play starts or ends, not every bubble on screen.
+    val screenPlaying by remember(m.guid, effects) { derivedStateOf { effects.screenPlay?.guid == m.guid } }
+    // Invisible Ink hides the words (and the reply quote) under a shimmer until a tap; the state is this bubble's own.
+    // Not for a message with nothing to hide (attachments only): its shimmer loop would run for no one to see.
+    val ink = if (m.effect == MessageEffects.INVISIBLE_INK && InvisibleInkSpec.hidesSomething(m)) rememberInvisibleInk(m.guid, effects.animationsOn) else null
+    val wordsHidden = ink?.concealed == true
     Box(Modifier.fillMaxWidth()) {
         // Revealed underneath as the row slides left — iMessage's timestamp peek.
         if (peek > Spacing.none) {
@@ -241,7 +277,10 @@ fun Bubble(
         // Spec C3 (reference MessageRow): the whole gap sits above the bubble —
         // 12dp when a run starts, 2dp inside one — so a separator's own padding
         // reads the same above and below it.
-        Modifier.fillMaxWidth().offset(x = -peek).padding(
+        Modifier.fillMaxWidth().offset(x = -peek)
+            // Slam's landing shoves the whole row, avatar and all, for 200 ms; the layer exists only while it plays.
+            .then(if (fx != null) Modifier.graphicsLayer { translationY = fx.joltPx.floatValue } else Modifier)
+            .padding(
             start = Dimens.bubbleGutter, end = Dimens.bubbleGutter,
             top = if (firstInRun) Dimens.bubbleGapBetweenRuns else Dimens.bubbleGapInRun,
         ),
@@ -262,10 +301,30 @@ fun Bubble(
                  color = senderColor(m.sender),
                  modifier = Modifier.padding(start = Dimens.bubblePadH, bottom = Spacing.xxs))
         }
+        // The message's own parts (attachments, quote, link card, text) in one column that hugs them, so a bubble
+        // effect (Slam, Loud, Gentle: EffectPlayback.kt) scales and turns them together about the bubble's own
+        // corner while the sender's name, the reactions and the captions stay still, as on iOS. The layer exists
+        // only while an effect plays; the rest of the time this column changes nothing in the layout.
+        Column(
+            (if (fx != null) Modifier.graphicsLayer {
+                scaleX = fx.scale.floatValue
+                scaleY = fx.scale.floatValue
+                rotationZ = fx.rotation.floatValue
+                alpha = fx.alpha.floatValue
+                transformOrigin = fx.origin
+            } else Modifier)
+                // While this message's screen effect plays (the play is set before the overlay's first frame) the
+                // column reports where it is, so Spotlight finds the bubble and Love grows out of it, and keeps
+                // reporting as the list scrolls. Only then: a positioned callback on every bubble would fire on
+                // every scroll of every row.
+                .then(if (screenPlaying) Modifier.onGloballyPositioned { effects.reportBounds(m.guid, it.boundsInRoot()) } else Modifier),
+            horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+        ) {
         // Spec C16 (reference MediaFrame): photos, GIFs, videos and link cards keep the
         // bubble's corners and gain a hairline, so a white picture still has an edge on a
         // white background. The relay does not say which images are transparent stickers,
-        // so every image is framed.
+        // so every image is framed. Attachments and link cards of an Invisible Ink message are
+        // simply shown: the ink hides the words, as iOS's does, and the quote with them.
         val mediaFrame = BorderStroke(Dimens.hairline, MaterialTheme.colorScheme.outlineVariant)
         // A 4dp gap between stacked parts (several attachments, then a card or a bubble) but
         // none after the last one, so a reaction chip overlaps the message's real bottom edge.
@@ -364,7 +423,14 @@ fun Bubble(
             // quoted text in bodySmall secondary, 4dp above the reply bubble on the same side.
             // The app's sender line stays above the text, in the same secondary color.
             Row(
-                Modifier.widthIn(max = Dimens.bubbleMaxWidth).height(IntrinsicSize.Min).padding(bottom = Spacing.xs),
+                Modifier.widthIn(max = Dimens.bubbleMaxWidth).height(IntrinsicSize.Min).padding(bottom = Spacing.xs)
+                    // Invisible Ink hides the quoted words too, under the same shimmer in the quote's own grey.
+                    // The quote takes the reveal tap as the text bubble does: a reply with no words of its own
+                    // (a photo, a bare link) has no text bubble, and its quote would otherwise stay hidden for good.
+                    // While hidden, TalkBack gets the same one line in the quote's place.
+                    .then(if (ink != null) Modifier.invisibleInk(ink, secondary)
+                              .combinedClickable(onClick = { ink.reveal() }, onLongClick = { onLongPress(m) }) else Modifier)
+                    .then(if (wordsHidden) Modifier.clearAndSetSemantics { contentDescription = INVISIBLE_INK_DESCRIPTION } else Modifier),
             ) {
                 Box(Modifier.width(Spacing.xxs).fillMaxHeight().background(MaterialTheme.colorScheme.outline, CircleShape))
                 Spacer(Modifier.width(Spacing.sm))
@@ -387,14 +453,9 @@ fun Bubble(
                      sentColor = sentBg, sentText = sentText, border = mediaFrame)
             stacked = true
         }
-        val body = m.text?.replace("\uFFFC", "")?.trim()
-        // Apple's stored URL may carry query params the typed text doesn't
-        // ("...?variant=139407"), so compare without the query string.
-        val hideBody = link != null && body != null && run {
-            fun bare(u: String?) = u?.trim()?.substringBefore('?')?.trimEnd('/')
-            bare(body) != null && bare(body).equals(bare(link.url), ignoreCase = true)
-        }
-        if (!body.isNullOrBlank() && !hideBody) {
+        // The words, unless they are only the link card's own URL (bubbleBody).
+        val body = bubbleBody(m)
+        if (body != null) {
             // The text sits flush under a link card, as before; after media it gets the 4dp gap.
             if (stacked && !showLink) Spacer(Modifier.height(Spacing.xs))
             Surface(
@@ -402,18 +463,26 @@ fun Bubble(
                 shape = BubbleShape,
                 // iMessage-style cap: bubbles never span the full screen width.
                 modifier = Modifier.widthIn(max = Dimens.bubbleMaxWidth)
-                    .combinedClickable(onClick = {}, onLongClick = { onLongPress(m) }),
+                    // A tap reveals Invisible Ink (and does nothing on any other bubble); the long press keeps its menu.
+                    .combinedClickable(onClick = { ink?.reveal() }, onLongClick = { onLongPress(m) })
+                    // While the words are hidden TalkBack gets one line in their place; the click action sits outside.
+                    .then(if (wordsHidden) Modifier.clearAndSetSemantics { contentDescription = INVISIBLE_INK_DESCRIPTION } else Modifier),
             ) {
                 HuggingText(
                     // Spec C10: a link keeps the bubble's own text color; the underline marks it.
                     // (#007AFF on the gray received bubble was 3.4:1 in dark mode.)
-                    linkified(body, linkColor = if (mine) sentText else MessagesTheme.colors.onBubbleReceived),
+                    // No link spans while the words are hidden: one would take the tap meant to reveal them.
+                    if (wordsHidden) AnnotatedString(body)
+                    else linkified(body, linkColor = if (mine) sentText else MessagesTheme.colors.onBubbleReceived),
                     color = if (mine) sentText else recvText,
                     maxWidth = Dimens.bubbleMaxWidth - Dimens.bubblePadH * 2,  // bubble cap minus its side padding
-                    modifier = Modifier.padding(horizontal = Dimens.bubblePadH, vertical = Dimens.bubblePadV),
+                    // The shimmer, in the bubble's text colour, covers the whole interior: drawn outside the padding.
+                    modifier = (if (ink != null) Modifier.invisibleInk(ink, if (mine) sentText else recvText) else Modifier)
+                        .padding(horizontal = Dimens.bubblePadH, vertical = Dimens.bubblePadV),
                 )
             }
         }
+        }   // the message's own parts
         if (!reactions.isNullOrEmpty()) {
             // Spec C12 (reference ReactionChip): the chips ride 8dp up over the bottom edge of
             // whatever was drawn last (bubble, link card or photo) and sit 12dp in from its
@@ -427,9 +496,10 @@ fun Bubble(
         }
         // One-tap copy for verification codes, and translate-on-demand for
         // messages in another script. Both render as quiet chips under the text.
+        // Not while Invisible Ink hides the words: "Copy 123456", Translate or a translation would give them away.
         val otp = remember(m.guid) { Otp.find(m.text) }
         val foreign = remember(m.guid) { looksForeign(m.text) }
-        if (otp != null || (foreign && translation == null && onTranslate != null)) {
+        if (!wordsHidden && (otp != null || (foreign && translation == null && onTranslate != null))) {
             Row(Modifier.padding(top = Spacing.xxs)) {
                 if (otp != null) {
                     ActionChip("Copy $otp") {
@@ -444,7 +514,7 @@ fun Bubble(
                 }
             }
         }
-        translation?.takeIf { it.isNotBlank() }?.let { tr ->
+        translation?.takeIf { it.isNotBlank() && !wordsHidden }?.let { tr ->
             Surface(
                 color = recvBg.copy(alpha = 0.55f),
                 shape = RoundedCornerShape(Dimens.cardRadius),
@@ -478,6 +548,30 @@ fun Bubble(
             // between messages on line-box slack.
             Text("Edited", style = MaterialTheme.typography.labelSmall, color = secondary,
                  modifier = Modifier.padding(horizontal = Spacing.xs))
+        }
+        // A message sent with an effect says so in iOS's words ("Sent with Confetti"), under a received
+        // bubble as under a sent one (effectCaptionFor, MessageEffects.kt), with Replay beside it where the
+        // rules allow (a known effect, not Invisible Ink, animations on, nothing playing: PlaybackRules.showsReplay).
+        // Replay plays it through the chat's controller: a bubble effect on the bubble, a screen effect over the chat.
+        effectCaptionFor(m)?.let { caption ->
+            // Replay keeps its place in the line while the effect plays (the word drawn clear, taking no tap and
+            // saying nothing to TalkBack) rather than leaving it: its padding makes the line taller than the caption
+            // alone, and in this bottom-anchored list a line that lost and regained that height would move every
+            // older row for the length of the play, and grow a new message's row when its auto-play ended.
+            val replayable = PlaybackRules.showsReplay(m.effect, effects.animationsOn, playing = false)
+            val replay = PlaybackRules.showsReplay(m.effect, effects.animationsOn, playing = play != null)
+            Row(Modifier.padding(horizontal = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (replay) "$caption ·" else caption, style = MaterialTheme.typography.labelSmall, color = secondary)
+                if (replayable) m.effect?.let { effect ->
+                    // A caption-sized text button, as iOS puts it. The padding inside the click widens the target a
+                    // little; Material's 48dp minimum would turn the caption line into a row of buttons.
+                    Text("Replay", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
+                         modifier = Modifier.alpha(if (replay) 1f else 0f)
+                             .then(if (replay) Modifier.clickable(role = Role.Button) { effects.play(m, effect) }
+                                   else Modifier.clearAndSetSemantics {})
+                             .padding(horizontal = Spacing.xs, vertical = Spacing.xxs))
+                }
+            }
         }
         if (note != null) {
             // TalkBack reads the note when it appears (as WarningStrip's text): nothing else says an Undo Send has started.

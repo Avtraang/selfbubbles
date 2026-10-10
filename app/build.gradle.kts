@@ -544,6 +544,10 @@ dependencies {
     // Material icons (the core set only; ui/theme/Icons.kt maps the rest).
     implementation("androidx.compose.material:material-icons-core")
 
+    // The Confetti screen effect (ScreenEffectPainters.kt): Konfetti's Compose particle view draws the
+    // falling paper. The other eight screen effects are the app's own Canvas painters.
+    implementation(libs.konfetti.compose)
+
     // App lock (AppLock.kt / SettingsScreen.kt): fingerprint, face or device PIN
     // before the message history shows. BiometricPrompt needs a FragmentActivity,
     // which this library brings in transitively (androidx.fragment).
