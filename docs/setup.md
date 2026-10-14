@@ -655,14 +655,14 @@ until you fill something in; here is what each key does and what to put in it.
 | `RELAY_REMOTE_BASE` | optional | `https://relay.example.com` or your `https://….ts.net` address, no trailing slash. | Must be `https://` with a host; no query string, user info or `#fragment`, or the build fails naming the key. Empty → asked on first run. |
 | `RELAY_REMOTE_WS` | optional | Leave it empty (`RELAY_REMOTE_WS=`) unless you need to spell it out as `wss://relay.example.com/ws`. | Empty is fine: the app derives `wss://<host>[:port]<path>/ws` from `RELAY_REMOTE_BASE` (the Gradle warning for it says so once `RELAY_REMOTE_BASE` is set). If you set it, it must be `wss://` on the **same host and port** as the base, with no query string, or the build fails. |
 | `FAMILY_MAP_URL` | optional | Empty (`FAMILY_MAP_URL=`), or `https://relay.example.com/map` once step 5.4 is done. | **Not** checked by the build. The app's Relay form refuses to save anything but an empty value or an `https://` URL with a host; a query string and `#fragment` are allowed here. Empty hides the Map button. |
-| `FEATURES` | optional, ships present and empty | A comma-separated subset of `facetime`, `map`, `translate`, `voice`, or nothing after the `=`. | See below; the line's presence matters as much as its value. |
+| `FEATURES` | optional, ships present and empty | A comma-separated subset of `facetime`, `map`, `translate`, `voice`, `schedule`, or nothing after the `=`. | See below; the line's presence matters as much as its value. |
 | `APP_LABEL` | optional, ships commented out | The launcher label, up to 30 characters. | Absent or empty → "SelfBubbles". It is also the chat-list title and the "Unlock …" prompt. One line; longer values are cut at 30 with a warning. |
 | `APPLICATION_ID` | optional, ships commented out | The id the app is installed under, in the form `com.example.messages`. | Absent → `io.github.avtraang.selfbubbles`. Unlike the other keys it cannot be left empty: `APPLICATION_ID=` fails the build like any malformed value, so delete the line or keep it commented out. Set it only to keep installing over an app that is already on your phone under another id (to Android a different id is a different app, with its own data and settings), or to match the package name your own Firebase client file was created for (step 5.3). At least two segments separated by dots, each starting with a letter; letters, digits and `_` only, or the build fails naming the key. With a `google-services.json` in place the build also fails when that file has no client for the id. |
 
-`FEATURES` decides which of the four optional features start switched on.
+`FEATURES` decides which of the five optional features start switched on.
 **Present** (even as a bare `FEATURES=`) makes it authoritative: exactly the
-names listed start ON, so the shipped line starts all four OFF; an unknown
-name is warned about by name and ignored. **Absent** means: all four start ON
+names listed start ON, so the shipped line starts all five OFF; an unknown
+name is warned about by name and ignored. **Absent** means: all five start ON
 when `RELAY_REMOTE_BASE` is set in this file, all OFF otherwise, and only that
 last build (no `FEATURES`, no `RELAY_REMOTE_BASE`) takes its first switch
 values from the relay's `/health`, once. Every switch can be changed later in
@@ -671,7 +671,7 @@ Settings > Features (step 4.2), whatever the build said.
 The simplest working file for a first build is the copy itself, unedited: it
 bakes nothing in, the app opens on the relay form (step 4.1) and you type the
 values on the phone. No `secrets.properties` at all, or an empty one, gives
-the same app with one difference: under the shipped `FEATURES=` line the four
+the same app with one difference: under the shipped `FEATURES=` line the five
 optional features start off and stay off until you flip them, where a build
 with no `FEATURES` line takes its first switch values from the relay, once
 (above, and step 4.2).
@@ -865,7 +865,7 @@ Auto Backup and device-to-device transfer, so they never leave the phone.
 ### 4.2 Settings > Features
 
 Open Settings with the gear icon at the right of the thread list's top bar.
-Under **Features** sit four switches, each with a description:
+Under **Features** sit five switches, each with a description:
 
 - **Family map** — "A page of your family's locations, opened from the thread
   list." Until a map URL is saved it adds "Needs a family map URL (Relay
@@ -877,19 +877,35 @@ Under **Features** sit four switches, each with a description:
 - **Voice assistant** — "The Voice Text launcher entry: speak a message, hear
   the relay's answer." Flipping it adds or removes the second launcher icon,
   **Voice Text**, right away.
+- **Send later** — "Long-press Send to pick a time; the relay keeps the
+  message on the Mac and sends it then." While the relay's last report does
+  not name `schedule` it adds "Needs a relay that reports it (Test
+  connection below)." and the switch alone offers nothing: the `/scheduled` routes are
+  the relay's, and a relay from before them (or one started with
+  `IMSG_SCHEDULE=0`) answers them with 404.
 
-The note above them says it exactly: a Test connection or Save asks the relay
-what it offers; that only annotates these rows, the switches are yours. A row
+The note above them says: a Test connection or Save asks the relay what it
+offers; that only annotates these rows, the switches are yours. Two things
+it leaves out. The app also asks by itself, with one `GET /health` to the
+saved relay in the background, at every start and every time its live
+connection to the relay opens, so a relay updated with a new feature is
+noticed without a visit to Settings (a relay that does not answer leaves the
+last report as it was). And Send later is the exception to "only
+annotates": its row in the long-press sheet and the scheduled rows above
+the composer show only while the switch is on **and** the relay's last
+report named `schedule`. Turning the switch off hides those rows but cancels
+nothing on the relay; cancel a scheduled text from its row first. A row
 gains "The relay reports this as unavailable." when the relay's `/health`
 said `false` for it (for the family map, only while the map URL is empty or on
 the relay's own origin, since the relay can only judge its own `/map` page).
 The switch still works; the annotation is advice.
 
 With the shipped `secrets.properties.example` (`FEATURES=` present and empty)
-all four start OFF and stay OFF until you flip them; the relay's report
-changes nothing. Only a build with **no** `FEATURES` line **and no**
-`RELAY_REMOTE_BASE` seeds its switches from the first successful Test
-connection or Save, once.
+all five start OFF and stay OFF until you flip them; the relay's report
+moves no switch. Only a build with **no** `FEATURES` line **and no**
+`RELAY_REMOTE_BASE` seeds its switches from the relay's report, once:
+normally the first successful Test connection or Save, since until a relay
+is saved there is nothing to ask at start or on a reconnect.
 
 Also in Settings: **App lock** ("Require unlock": fingerprint, face or the
 device PIN before messages show, with a re-lock grace period; it starts on

@@ -126,10 +126,13 @@ Two OkHttp interceptors are the only code that touches credentials:
 
 Every client in the app is built from these: the shared `http` client, the
 upload client, Coil's image loader (`MainActivity.kt`), ExoPlayer's
-`OkHttpDataSource` (`VideoPlayer.kt`), the throwaway client "Test
-connection" uses (`RelayProbe.kt`) and the WebView proxy for the relay's own
-map page (`MapScreen.kt`, `RelayWebAssets`). The probe client, the WebSocket
-client and the WebView proxy never follow redirects at all.
+`OkHttpDataSource` (`VideoPlayer.kt`), the throwaway client of each
+`/health` probe (`RelayProbe.kt`: "Test connection", and the one the app
+makes on its own after a Save that changed the settings, at every start
+and every time its live connection opens, to learn what the relay offers)
+and the WebView proxy for the relay's own map page (`MapScreen.kt`,
+`RelayWebAssets`). The probe client, the WebSocket client and the WebView
+proxy never follow redirects at all.
 
 Covered by JVM unit tests under `app/src/test/`: `RelayOriginTest`,
 `RelayConfigTest`, `RelayConfigStoreTest`, `RelayProbeTest`,
@@ -279,7 +282,12 @@ one-to-one chat that is the other person's phone number or email address),
 the chat name, the sender, up to 300 characters of text, the message's row
 number and id and, for a picture, the relay-relative path of the first image
 (no hostname, no token). A FaceTime ring carries the call id and the
-caller's address and name. It travels over TLS, but Google can read it: it
+caller's address and name. The notice that a text scheduled with Send later
+was sent or could not be sent carries the chat identifier, the chat name,
+the scheduled item's id and state, and the first 60 characters of the text;
+the app's notification names the chat and shows none of the text, but the
+push carries it all the same, and turning the app's Send later switch off
+does not stop it. Every push travels over TLS, but Google can read it: it
 is not end-to-end encrypted. Leave `FCM_CREDS` unset on the relay if you do
 not want that.
 

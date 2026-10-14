@@ -46,6 +46,7 @@ class FeaturesTest {
         assertEquals(Feature.FACE_TIME, Feature.byRelayName("facetime"))
         assertEquals(Feature.TRANSLATION, Feature.byRelayName("translate"))
         assertEquals(Feature.VOICE_ASSISTANT, Feature.byRelayName("voice"))
+        assertEquals(Feature.SCHEDULE, Feature.byRelayName("schedule"))
         assertNull(Feature.byRelayName("maps"))
     }
 
@@ -106,8 +107,12 @@ class FeaturesTest {
         assertFalse(f.seeded)
         assertTrue(f.relayReported(report))
         assertTrue(f.seeded)
+        // A feature the report did not name (an older relay's four) keeps the build default, OFF.
         assertEquals(
-            mapOf(Feature.FAMILY_MAP to false, Feature.FACE_TIME to true, Feature.TRANSLATION to true, Feature.VOICE_ASSISTANT to false),
+            mapOf(
+                Feature.FAMILY_MAP to false, Feature.FACE_TIME to true, Feature.TRANSLATION to true,
+                Feature.VOICE_ASSISTANT to false, Feature.SCHEDULE to false,
+            ),
             f.switches,
         )
         // A later, different report only annotates: no switch moves.

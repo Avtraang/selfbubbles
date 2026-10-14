@@ -41,6 +41,11 @@ private const val UNSENT_FILE_TAG = "unsent-file"
 /** The action of the intent behind a "not sent" notification; it only tells that intent from the conversation notification's. */
 const val ACTION_OPEN_UNSENT = "io.github.avtraang.selfbubbles.OPEN_UNSENT"
 
+/** The channel and tag for a scheduled text the relay sent or could not send (Notifs.showScheduled), and its intent's action. */
+private const val SCHEDULED_CHANNEL_ID = "imsg-scheduled"
+private const val SCHEDULED_TAG = "scheduled"
+const val ACTION_OPEN_SCHEDULED = "io.github.avtraang.selfbubbles.OPEN_SCHEDULED"
+
 /**
  * How long a reply typed in a notification is waited for inside its broadcast.
  * The system gives a receiver about 10 s (a foreground broadcast) before it
@@ -173,6 +178,56 @@ object Notifs {
     fun clearUnsent(ctx: Context, chatGuid: String, attachments: Boolean = true) {
         runCatching { NotificationManagerCompat.from(ctx).cancel(UNSENT_TAG, notifId(chatGuid)) }
         if (attachments) runCatching { NotificationManagerCompat.from(ctx).cancel(UNSENT_FILE_TAG, notifId(chatGuid)) }
+    }
+
+    /**
+     * The relay sent a text the owner had scheduled for [chatGuid], or could not
+     * (SendLater.kt; the push's [state]): one quiet notice naming the chat, which
+     * opens it, where a failed text waits above the composer with Retry. No
+     * message text in it. Not while the chat is on screen with a live socket:
+     * the relay's "scheduled" frame moves the row there ([pushIsRedundant]).
+     * One per chat; a later one there replaces it.
+     */
+    fun showScheduled(ctx: Context, chatGuid: String, chatName: String, state: String?) {
+        val text = scheduledPushText(state, chatName) ?: return
+        if (pushIsRedundant(foreground, AppLock.gated, openChat, chatGuid, relaySocket.live)) return
+        val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (mgr.getNotificationChannel(SCHEDULED_CHANNEL_ID) == null) {
+            mgr.createNotificationChannel(
+                NotificationChannel(SCHEDULED_CHANNEL_ID, "Scheduled messages", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                    description = "A message you scheduled was sent, or could not be"
+                }
+            )
+        }
+        val id = notifId(chatGuid)
+        val open = Intent(ctx, MainActivity::class.java).apply {
+            // Its own action, for the same reason showUnsent has one: an intent equal to the
+            // conversation notification's would share its PendingIntent. MainActivity reads the extras only.
+            action = ACTION_OPEN_SCHEDULED
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_CHAT_GUID, chatGuid)
+            if (chatName.isNotBlank()) putExtra(EXTRA_CHAT_NAME, chatName)
+        }
+        val openPending = PendingIntent.getActivity(
+            ctx, id, open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val failed = scheduledStateOf(state) == ScheduledState.FAILED
+        val n = NotificationCompat.Builder(ctx, SCHEDULED_CHANNEL_ID)
+            .setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_notify_chat)
+            .setContentTitle(chatName.ifBlank { "Scheduled message" })
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(if (failed) NotificationCompat.CATEGORY_ERROR else NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setContentIntent(openPending)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(SCHEDULED_TAG, id, n) }
+    }
+
+    /** The chat was opened: its scheduled-message notice has done its work, the rows are on screen. */
+    fun clearScheduled(ctx: Context, chatGuid: String) {
+        runCatching { NotificationManagerCompat.from(ctx).cancel(SCHEDULED_TAG, notifId(chatGuid)) }
     }
 
     private fun person(ctx: Context, name: String): Person {
@@ -458,11 +513,14 @@ class NotifActions : BroadcastReceiver() {
  * notification is removed, nothing else runs). Pure, so PushGateTest pins the table.
  */
 object PushGate {
-    enum class Route { MESSAGE, FACETIME, FACETIME_CANCEL, DROPPED }
+    enum class Route { MESSAGE, FACETIME, FACETIME_CANCEL, DROPPED, SCHEDULED }
 
     private const val FT_ENDED = "ended"
 
     fun route(kind: String?, ftEvent: String?, faceTimeOn: Boolean): Route = when {
+        // A scheduled text was sent or failed (SendLater.kt): its own notice, whatever the switches say,
+        // since the owner asked for that send and the relay has already acted.
+        kind == PUSH_KIND_SCHEDULED -> Route.SCHEDULED
         kind != "facetime" -> Route.MESSAGE
         faceTimeOn -> Route.FACETIME
         ftEvent == FT_ENDED -> Route.FACETIME_CANCEL
@@ -542,6 +600,10 @@ class PushService : FirebaseMessagingService() {
             PushGate.Route.FACETIME -> { FaceTimeNotifs.handle(this, d); return }
             PushGate.Route.FACETIME_CANCEL -> {
                 d["uuid"]?.takeIf { it.isNotBlank() }?.let { FaceTimeNotifs.cancel(this, it) }
+                return
+            }
+            PushGate.Route.SCHEDULED -> {
+                d["chat_guid"]?.takeIf { it.isNotBlank() }?.let { Notifs.showScheduled(this, it, d["chat_name"].orEmpty(), d["state"]) }
                 return
             }
             PushGate.Route.MESSAGE -> {}

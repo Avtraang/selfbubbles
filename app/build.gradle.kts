@@ -90,19 +90,19 @@ for ((key, value) in secretValues) {
 // as a bare "FEATURES="). The rule, applied by BuildFeatureDefault (Features.kt):
 //   present → authoritative: exactly the names listed start ON (an unknown name
 //             is warned about here by name and ignored);
-//   absent  → all four start ON when RELAY_REMOTE_BASE is set (the owner's
+//   absent  → all five start ON when RELAY_REMOTE_BASE is set (the owner's
 //             unchanged file), all OFF otherwise — and only that build takes
 //             its first values from the relay's /health, once.
 // Every switch can be changed later in the app's Settings > Features. Keep this
 // name list in step with the Feature enum in Features.kt.
-val featureNames = listOf("facetime", "map", "translate", "voice")
+val featureNames = listOf("facetime", "map", "translate", "voice", "schedule")
 val featuresRaw: String? = secrets.getProperty("FEATURES")?.trim()
 val featuresPresent = featuresRaw != null
 if (featuresRaw == null) {
     val relayBuiltIn = secretValues.getValue("RELAY_REMOTE_BASE").isNotEmpty()
     val outcome =
-        if (relayBuiltIn) "all four features (${featureNames.joinToString(", ")}) start ON because RELAY_REMOTE_BASE is set"
-        else "all four features (${featureNames.joinToString(", ")}) start OFF because RELAY_REMOTE_BASE is empty too"
+        if (relayBuiltIn) "all five features (${featureNames.joinToString(", ")}) start ON because RELAY_REMOTE_BASE is set"
+        else "all five features (${featureNames.joinToString(", ")}) start OFF because RELAY_REMOTE_BASE is empty too"
     logger.warn(
         "WARNING: secrets.properties: FEATURES is not set — $outcome; " +
             "a FEATURES=<comma-separated names> line (even empty) makes the list authoritative. " +

@@ -631,7 +631,11 @@ data class ContactHit(
 
 @Serializable private data class ThreadsResp(val threads: List<Thread>)
 @Serializable private data class MessagesResp(val messages: List<Msg>)
-@Serializable private data class WsEnvelope(val type: String, val data: Msg? = null)
+// A "scheduled" frame (SendLater.kt) carries its fields on the envelope itself, not under `data`.
+@Serializable private data class WsEnvelope(
+    val type: String, val data: Msg? = null,
+    val chat_guid: String? = null, val id: String? = null, val state: String? = null,
+)
 @Serializable private data class SendReq(
     val chat_guid: String, val text: String, val reply_to_guid: String? = null,
     // The send id (SendIds.kt). A null default is left out of the JSON, so a text without one is sent as it always was.
@@ -1113,6 +1117,68 @@ object Api {
         // The relay's answer is a few bytes; a page served in its place is not read past the first 4 KB.
         http.newCall(req).execute().use { PushRegistrationAnswer(it.code, isRelayOk(it.peekBody(4096).string())) }
     }
+
+    // ---- Send later (SendLater.kt has the shapes and the rules) ----
+
+    /**
+     * The relay's own 2xx body of a `/scheduled` call. Anything else throws
+     * [ScheduleFailedException] with the status: a refusal (404, 409, 422), or
+     * a 2xx that is not the relay's JSON (a login page in its place, as
+     * [isRelaySendReply] tells for a send). The body of a refusal goes no further.
+     */
+    private fun scheduledReply(r: Response, what: String): String {
+        if (!r.isSuccessful) throw ScheduleFailedException(r.code, "$what HTTP ${r.code}")
+        val body = r.body!!.string()
+        if (!isRelaySendReply(r.header("Content-Type"), body)) {
+            throw ScheduleFailedException(r.code, "$what HTTP ${r.code}, not the relay's reply")
+        }
+        return body
+    }
+
+    /** The item in a reply that must carry one; a 2xx without it is a failure, not an empty success. */
+    private fun scheduledItem(r: Response, what: String): ScheduledItem =
+        scheduledItemOf(scheduledReply(r, what)) ?: throw ScheduleFailedException(r.code, "$what: no item in the reply")
+
+    /** The scheduled texts of [chatGuid] (every chat's when null), soonest first; failures throw as above. */
+    suspend fun scheduled(chatGuid: String?): List<ScheduledItem> = withContext(Dispatchers.IO) {
+        http.newCall(scheduledListRequest(BASE, chatGuid)).execute().use { scheduledItemsOf(scheduledReply(it, "scheduled")) }
+    }
+
+    /**
+     * Asks the relay to send [text] into [chatGuid] at [sendAtSeconds], under the
+     * send id [clientId] ([newSendId]: the delivery runs under it, so the relay
+     * can never send it twice). The relay's item comes back; a repeat of the
+     * same id while that item exists gets the same item.
+     */
+    suspend fun schedule(
+        chatGuid: String, text: String, sendAtSeconds: Long, clientId: String, replyTo: String?, effect: String?,
+    ): ScheduledItem = withContext(Dispatchers.IO) {
+        http.newCall(scheduleRequest(BASE, chatGuid, text, sendAtSeconds, clientId, replyTo, effect)).execute()
+            .use { scheduledItem(it, "schedule") }
+    }
+
+    /** Moves a waiting item to [sendAtSeconds] and/or replaces its [text] (null: unchanged); the item as it is now. */
+    suspend fun reschedule(id: String, sendAtSeconds: Long?, text: String?): ScheduledItem = withContext(Dispatchers.IO) {
+        http.newCall(rescheduleRequest(BASE, id, sendAtSeconds, text)).execute().use { scheduledItem(it, "reschedule") }
+    }
+
+    /** Cancels a waiting item (or drops a failed one). Nothing comes back; a failure throws. */
+    suspend fun cancel(id: String) {
+        withContext(Dispatchers.IO) {
+            http.newCall(cancelScheduledRequest(BASE, id)).execute().use { scheduledReply(it, "cancel scheduled") }
+        }
+    }
+
+    /**
+     * Delivers an item at once, the way the scheduler would, and waits for the
+     * final state (sent or failed) like a send ([httpSend]: the Mac may take
+     * most of a minute over it). Under the item's own send id without
+     * [clientId]; with one (a fresh [newSendId]) it is "Send anyway" on a
+     * failed item, delivered under that id in the old one's place.
+     */
+    suspend fun sendNow(id: String, clientId: String? = null): ScheduledItem = withContext(Dispatchers.IO) {
+        httpSend.newCall(sendScheduledNowRequest(BASE, id, clientId)).execute().use { scheduledItem(it, "send scheduled now") }
+    }
 }
 
 /**
@@ -1146,6 +1212,8 @@ class WsManager(
     private val onOpen: () -> Unit,
     private val onMsg: (Msg) -> Unit,
     private val onUpdate: (Msg) -> Unit,
+    /** A scheduled text changed state on the relay (SendLater.kt); a relay without the feature never sends one. */
+    private val onScheduled: (ScheduledEvent) -> Unit = {},
 ) {
     @Volatile private var stopped = false
     private var ws: WebSocket? = null
@@ -1198,6 +1266,7 @@ class WsManager(
                 when (env.type) {
                     "message" -> env.data?.let(onMsg)
                     "update" -> env.data?.let(onUpdate)
+                    "scheduled" -> scheduledEventOf(env.chat_guid, env.id, env.state)?.let(onScheduled)
                 }
             }
 

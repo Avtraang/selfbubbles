@@ -182,6 +182,14 @@ fun SettingsScreen(
                 // The launcher entry follows the switch right away (VoiceComponent, VoiceActivity.kt).
                 onFlipped = { VoiceComponent.apply(activity) },
             )
+            FeatureRow(
+                feature = Feature.SCHEDULE,
+                title = "Send later",
+                description = "Long-press Send to pick a time; the relay keeps the message on the Mac and sends it then.",
+                // The switch alone shows nothing: the routes are the relay's, and only a relay that has reported
+                // the feature (a Test connection or Save here) is asked for them (SendLaterGate, Features.kt).
+                extra = if (Features.lastReported[Feature.SCHEDULE] != true) "Needs a relay that reports it (Test connection below)." else null,
+            )
 
             HorizontalDivider(Modifier.padding(vertical = Spacing.sm))
             SettingsHeader("Relay")

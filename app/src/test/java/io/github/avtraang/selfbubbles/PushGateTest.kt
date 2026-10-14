@@ -38,6 +38,14 @@ class PushGateTest {
         assertEquals(PushGate.Route.MESSAGE, route("message", "ended", on = false))   // ft_event means nothing off a FaceTime push
     }
 
+    @Test fun aScheduledTextsPush_hasItsOwnRoute_whateverTheFaceTimeSwitch() {
+        // The relay's word that a scheduled text was sent or failed (SendLater.kt): never a message notification.
+        assertEquals(PushGate.Route.SCHEDULED, route("scheduled", on = false))
+        assertEquals(PushGate.Route.SCHEDULED, route("scheduled", on = true))
+        assertEquals(PushGate.Route.SCHEDULED, route("scheduled", "ended", on = false))   // ft_event means nothing here either
+        assertEquals(PushGate.Route.MESSAGE, route("Scheduled", on = true))               // the relay's spelling only
+    }
+
     @Test fun kindIsMatchedExactly_asTheRelaySendsIt() {
         // Today's check is `kind == "facetime"`; a differently cased value never was a FaceTime push.
         assertEquals(PushGate.Route.MESSAGE, route("FaceTime", on = false))

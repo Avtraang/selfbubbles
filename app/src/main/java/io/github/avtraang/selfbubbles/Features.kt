@@ -7,18 +7,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /**
- * The four optional features. Each is named as the relay's `/health`
+ * The five optional features. Each is named as the relay's `/health`
  * "features" map names it, and that name is also the vocabulary of the
  * FEATURES build key — this enum is the one mapping table between relay name,
  * stored key and switch. The switches are the source of truth (Settings >
  * Features); the relay's report only seeds a stranger's first values and
- * annotates the rows.
+ * annotates the rows. Send later is the one exception: it is a relay route,
+ * so its switch alone offers nothing until the relay has reported the feature
+ * ([SendLaterGate]).
  */
 enum class Feature(val relayName: String, val prefsKey: String) {
     FAMILY_MAP("map", "feature_map"),
     FACE_TIME("facetime", "feature_facetime"),
     TRANSLATION("translate", "feature_translate"),
-    VOICE_ASSISTANT("voice", "feature_voice");
+    VOICE_ASSISTANT("voice", "feature_voice"),
+    /** "Send later" in the composer's long-press sheet (SendLater.kt): the relay's /scheduled routes. */
+    SCHEDULE("schedule", "feature_schedule");
 
     companion object {
         /** The feature a relay or FEATURES name stands for; null for an unknown name. */
@@ -49,7 +53,7 @@ fun parseFeatureList(raw: String): ParsedFeatures {
  * - FEATURES present (even as an empty `FEATURES=`): it is authoritative —
  *   exactly the names listed start ON; unknown names are ignored (Gradle
  *   warned about them by name).
- * - FEATURES absent: all four ON when RELAY_REMOTE_BASE was set at build time
+ * - FEATURES absent: all five ON when RELAY_REMOTE_BASE was set at build time
  *   (the owner's unchanged file), all OFF otherwise (a stranger's empty file).
  * Only that last build — no FEATURES, no relay — is [seedable] from the relay.
  */
@@ -87,7 +91,8 @@ class BuildFeatureDefault(val featuresPresent: Boolean, featuresRaw: String, val
  * A partial map seeds only the names it lists; a feature the relay did not
  * mention keeps the build default (OFF) rather than guessing "available" — a
  * stranger can turn it on in Settings, whereas a button for something the relay
- * never claimed to offer would only fail. (The relay reports all four today.)
+ * never claimed to offer would only fail. (A relay reports the four it has long
+ * had; one with Send later reports "schedule" as well.)
  */
 class FeatureFlags(val build: BuildFeatureDefault, private val backing: Backing) {
 
@@ -258,6 +263,9 @@ object Features {
     /** The Map button's real condition: the switch, and a map URL to load (Relay section). */
     val familyMapUsable: Boolean get() = familyMap && RelayConfigStore.current.mapUrl.isNotBlank()
 
+    /** "Send later"'s real condition: the switch, and a relay that reported the feature ([SendLaterGate]). */
+    val sendLater: Boolean get() = SendLaterGate.offered(isOn(Feature.SCHEDULE), lastReported[Feature.SCHEDULE])
+
     fun isOn(f: Feature): Boolean = switches[f] ?: false
 
     /** True when the Settings row for [f] should say the relay reports it unavailable. */
@@ -293,6 +301,25 @@ object Features {
         publish()
     }
 
+    /**
+     * Asks the relay what it offers and records the answer, exactly as Test
+     * connection does. Called at process start and whenever the live socket
+     * (re)connects, so a relay updated with a new feature ("Send later" on
+     * 2026-10-11) is noticed without a visit to Settings: before this, the
+     * report was stored only by Test connection or Save, and the new row stayed
+     * hidden until the owner pressed one of them. Nothing is shown for a relay
+     * that does not answer; the stored report is kept as it was.
+     */
+    suspend fun refreshFromRelay(cfg: RelayConfig = RelayConfigStore.current, alsoChanges: Boolean = false) {
+        if (cfg.base.isBlank()) return
+        val outcome = runCatching { RelayProbe.probe(cfg) }.getOrNull() as? ProbeOutcome.Connected ?: return
+        relayReported(outcome)
+        // What the relay says it can do to a sent message: Edit and Undo Send follow it. Only at process start
+        // ([alsoChanges]) and from Settings, not at every reconnect: the report replaces what a refusal taught
+        // (ChangeSupport.note), and on a flaky link a reconnect a minute would offer a refused Edit again each time.
+        if (alsoChanges) ChangeSupport.relayReported(cfg.base, outcome.capabilities)
+    }
+
     private fun publish() {
         switches = flags.switches
         lastReported = flags.lastReported
@@ -311,4 +338,17 @@ object Features {
 object TranslationGate {
     /** The pin menu's Always/Stop translating button: while the feature is on, or for a thread already flagged. */
     fun showAutoTranslateControl(featureOn: Boolean, threadFlagged: Boolean): Boolean = featureOn || threadFlagged
+}
+
+/**
+ * The Send later switch over the composer's long-press sheet and the rows above
+ * the composer (SendLater.kt). Unlike the other features this one is a set of
+ * relay routes that an older relay answers with 404, so the switch is not
+ * enough: the relay's last `/health` report ([Features.lastReported], from a
+ * Test connection or a Save) must name "schedule" as on. A relay that never
+ * mentioned it, or said false, offers nothing and asks nothing of it.
+ */
+object SendLaterGate {
+    /** Whether "Send later" is offered: the switch, and the relay's word ([relayReported]: null when it never mentioned the feature). */
+    fun offered(featureOn: Boolean, relayReported: Boolean?): Boolean = featureOn && relayReported == true
 }

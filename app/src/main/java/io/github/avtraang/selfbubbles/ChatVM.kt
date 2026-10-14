@@ -163,6 +163,7 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         endEdit()
         sendPath = SendPathState()
         fallbackMode = false
+        scheduled = emptyList()
     }
 
     // The socket's callbacks arrive on OkHttp's thread, and everything they touch (the
@@ -173,12 +174,16 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         onOpen = { viewModelScope.launch { socketOpened() } },
         onMsg = { msg -> viewModelScope.launch { socketMessage(msg) } },
         onUpdate = { msg -> viewModelScope.launch { socketUpdate(msg) } },
+        onScheduled = { ev -> viewModelScope.launch { socketScheduled(ev) } },
     )
 
     private fun socketOpened() {
         // The relay is reachable now, whatever it was when the app started, and whatever it has
         // forgotten since. It keeps a set, so a repeat changes nothing there (PushWiringTest pins this call).
         if (isConfigured) Push.registerWithRelay(getApplication(), viewModelScope)
+        // And what it offers now: a relay restarted with a new feature reconnects this socket, so this is the
+        // moment a "Send later" row appears or goes (Features.refreshFromRelay; also asked at process start).
+        viewModelScope.launch { Features.refreshFromRelay() }
         refreshThreads()
         val c = current ?: return
         // The reconnect reloads the latest page only, so paging starts over from
@@ -186,6 +191,8 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         // be merged into the fresh list and leave a gap below it.
         resetPaging()
         readOpenChat(c.chat_guid, PageRequest(c.chat_guid, pagingGeneration))
+        // A "scheduled" frame sent while the socket was down is gone; the list says what it would have.
+        loadScheduled()
     }
 
     // ---- reading the open chat (ChatLoading.kt) ----
@@ -487,12 +494,18 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
         resetPaging()
         val req = PageRequest(t.chat_guid, pagingGeneration)
         // Opening a chat dismisses its notifications (a new message, a text that was not
-        // sent: its row is on this screen) and stops pushes for it while it is on screen.
+        // sent: its row is on this screen, and so is a scheduled text's) and stops pushes
+        // for it while it is on screen.
         Notifs.openChat = t.chat_guid
         Notifs.clear(getApplication(), t.chat_guid)
         Notifs.clearUnsent(getApplication(), t.chat_guid)
+        Notifs.clearScheduled(getApplication(), t.chat_guid)
         ConversationShortcuts.pushUsage(getApplication(), t.chat_guid)
         readOpenChat(t.chat_guid, req)
+        // The last chat's scheduled rows go with it, and so does a "Send anyway?" asked about one of
+        // them; this chat's are read now (SendLater.kt).
+        if (!sameChat) { scheduled = emptyList(); scheduledSendAnywayAsk = null }
+        loadScheduled()
         // A text here whose send ended without an answer a moment ago (the app was closed over it): its
         // row says "check the chat" while the Mac may still be sending, so the chat is read again for a while.
         recheckOnOpenSince(Outbox.texts.value, t.chat_guid, System.currentTimeMillis())?.let { recheckChat(t.chat_guid, it) }
@@ -862,6 +875,176 @@ class ChatVM(app: Application, private val state: SavedStateHandle) : AndroidVie
 
     /** "Discard" on an unsent text's row. */
     fun discardUnsent(entry: UnsentText) = Outbox.discard(getApplication(), entry.id)
+
+    // ---- Send later (SendLater.kt has the rules; Api.scheduled and friends the requests) ----
+
+    /**
+     * The open chat's scheduled texts as the relay lists them (`GET /scheduled?chat_guid=`),
+     * read when the chat is opened, when the socket (re)opens, on the relay's
+     * "scheduled" frame and after each action here. The relay's list is the truth:
+     * the text lives on the Mac until it is sent, and another phone may act on it.
+     * Nothing is asked of a relay that has not reported the feature
+     * ([Features.sendLater]): its route is a 404, and there is nothing to show.
+     */
+    var scheduled by mutableStateOf<List<ScheduledItem>>(emptyList()); private set
+
+    /** The "Sent" rows the owner dismissed, by id, for this process: the relay lists a finished item for a day. */
+    private var scheduledDismissed by mutableStateOf<Set<String>>(emptySet())
+
+    /** The rows above the open chat's composer (ScheduledStrip). */
+    val scheduledRows: ScheduledRows
+        get() = current?.let { scheduledRowsFor(scheduled, it.chat_guid, scheduledDismissed) } ?: ScheduledRows(emptyList(), 0)
+
+    fun loadScheduled() {
+        val t = current ?: return
+        if (!Features.sendLater) return
+        viewModelScope.launch {
+            // A read that fails leaves the rows as they were; the log gets the class names, never an item.
+            val items = runCatching { Api.scheduled(t.chat_guid) }
+                .onFailure { android.util.Log.w("Imsg", "scheduled list failed (${failureLabel(it)})") }
+                .getOrNull() ?: return@launch
+            if (current?.chat_guid == t.chat_guid) scheduled = items
+        }
+    }
+
+    /** The relay's "scheduled" frame: an item of the open chat moved, so its list is read again. Ids and states only in the log. */
+    private fun socketScheduled(ev: ScheduledEvent) {
+        android.util.Log.d("ImsgWS", "scheduled id=${ev.id} state=${ev.state}")
+        if (ev.chatGuid == current?.chat_guid) loadScheduled()
+    }
+
+    /**
+     * The send id of the text being scheduled (ScheduleSend, SendLater.kt). It
+     * lives here, as the first text of a new conversation's does ([newChatSend]):
+     * a POST whose answer was lost may have left the item on the relay, and
+     * "Send later" again on the same words must carry the same id for the relay
+     * to answer with that item instead of a second one. Gone once the relay has
+     * answered, or with this ViewModel.
+     */
+    private var scheduleSend: ScheduleSend? = null
+
+    /** A `POST /scheduled` is on its way: the composer's Send is a spinner meanwhile (ConversationScreen). */
+    var scheduling by mutableStateOf(false); private set
+
+    /**
+     * "Send later" on [text] at [sendAtSeconds]: one `POST /scheduled` under the
+     * send id kept for these words ([scheduleSend]), replying to the banner's
+     * message as a send would. [onDone] gets whether the relay took it, and the
+     * composer clears only then: unlike a send, which the outbox keeps whatever
+     * happens, a refused request here has no row to fall back on and would lose
+     * the words. Until the relay answers the words are in two places at once,
+     * the field and the request, so [scheduling] takes Send away for that
+     * moment: a tap on it would deliver them now and the relay again later. The
+     * reply banner goes with a success, as after a send. An effect chosen in the
+     * same sheet is not sent along in this version; the sheet says so.
+     */
+    fun scheduleText(text: String, sendAtSeconds: Long, onDone: (Boolean) -> Unit) {
+        val t = current ?: return onDone(false)
+        if (scheduling) return onDone(false)
+        val target = replyTargetGuid(replyingTo, replyingChat, t.chat_guid)
+        val send = scheduleSendFor(scheduleSend, t.chat_guid, text, ::newSendId).also { scheduleSend = it }
+        scheduling = true
+        viewModelScope.launch {
+            val result = runCatching { Api.schedule(t.chat_guid, text, sendAtSeconds, send.id, target, effect = null) }
+            scheduling = false
+            result.onSuccess { item ->
+                // The relay has it (as a new item, or as the one an earlier lost answer left): the id is spent.
+                scheduleSend = null
+                if (current?.chat_guid == t.chat_guid) {
+                    scheduled = scheduledUpsert(scheduled, item)
+                    if (target != null && replyingTo?.guid == target) cancelReply()
+                }
+                Toast.makeText(
+                    getApplication(), scheduledToast(item.send_at, java.time.ZonedDateTime.now(), java.util.Locale.getDefault()), Toast.LENGTH_SHORT,
+                ).show()
+            }.onFailure {
+                scheduleSend = scheduleSendAfter(send, it)
+                // Class names and the status, like every failed send's line: never the text or the chat.
+                android.util.Log.w("Imsg", sendFailureLogLine("schedule", it) + scheduleStatusForLog(it))
+                Toast.makeText(getApplication(), scheduleFailureLine(it), Toast.LENGTH_LONG).show()
+            }
+            onDone(result.isSuccess)
+            loadScheduled()
+        }
+    }
+
+    /** " http=NNN" for a refusal with a status, for the log; "" otherwise. */
+    private fun scheduleStatusForLog(t: Throwable): String = (t as? ScheduleFailedException)?.httpCode?.let { " http=$it" } ?: ""
+
+    /**
+     * One action on [item]'s row: the relay's answer takes the row's place (null:
+     * the row goes), a refusal is a toast, and the list is read again either way.
+     * A 409 says the item moved on without this app hearing (the socket was down,
+     * another phone acted, a failed item was retried from another phone), which
+     * the fresh list shows ([scheduleFailureLine]). [then] sees an answered item
+     * once it is in the rows: a Retry reads the relay's doubt off it.
+     */
+    private fun changeScheduled(item: ScheduledItem, what: String, then: (ScheduledItem) -> Unit = {}, call: suspend () -> ScheduledItem?) {
+        viewModelScope.launch {
+            runCatching { call() }
+                .onSuccess { updated ->
+                    scheduled = if (updated == null) scheduledWithout(scheduled, item.id) else scheduledUpsert(scheduled, updated)
+                    if (updated != null) then(updated)
+                }
+                .onFailure {
+                    android.util.Log.w("Imsg", "scheduled $what failed (${failureLabel(it)})${scheduleStatusForLog(it)} id=${item.id}")
+                    Toast.makeText(getApplication(), scheduleFailureLine(it), Toast.LENGTH_LONG).show()
+                }
+            loadScheduled()
+        }
+    }
+
+    /**
+     * "Send now" on a waiting row, "Retry" on a failed one: delivered at once
+     * under the item's own send id, so never twice; the row then says sent, or
+     * why not. A Retry the relay answers with the item still failed because it
+     * cannot tell what became of the earlier send ([scheduledOutcomeUnknown])
+     * sent nothing, and the owner is asked whether to send anyway
+     * ([scheduledSendAnywayAsk]), while this chat is still the open one: the
+     * row changing its words alone would read as if the tap did nothing.
+     */
+    fun sendScheduledNow(item: ScheduledItem) {
+        sendTick++
+        changeScheduled(
+            item, "send_now",
+            then = { if (scheduledOutcomeUnknown(it) && current?.chat_guid == it.chat_guid) scheduledSendAnywayAsk = it },
+        ) { Api.sendNow(item.id) }
+    }
+
+    /**
+     * The failed item "Send anyway" is being asked about; ConversationScreen shows
+     * the dialog while it is set. Set by a Retry the relay could not account for,
+     * or by the row's own "Send anyway" when the relay had said so already; gone
+     * with the answer, or with the chat.
+     */
+    var scheduledSendAnywayAsk by mutableStateOf<ScheduledItem?>(null); private set
+
+    /** "Send anyway" on a failed row: the question first, never the send itself. */
+    fun askSendScheduledAnyway(item: ScheduledItem) { scheduledSendAnywayAsk = item }
+
+    fun dismissSendScheduledAnyway() { scheduledSendAnywayAsk = null }
+
+    /**
+     * "Send anyway", confirmed: delivered now under a new send id, which the relay
+     * takes in the place of the one it cannot account for (SendLater.kt). A second
+     * copy may arrive next to the first; the dialog said so. A 409 means another
+     * phone got there first, and the fresh list shows the item sending or sent.
+     */
+    fun sendScheduledAnyway(item: ScheduledItem) {
+        scheduledSendAnywayAsk = null
+        sendTick++
+        changeScheduled(item, "send_anyway") { Api.sendNow(item.id, clientId = newSendId()) }
+    }
+
+    /** "Change time": the chooser's new time for [item]; its text stays as it is. */
+    fun rescheduleScheduled(item: ScheduledItem, sendAtSeconds: Long) =
+        changeScheduled(item, "reschedule") { Api.reschedule(item.id, sendAtSeconds, text = null) }
+
+    /** "Cancel" on a waiting row, "Delete" on a failed one: the text goes, from the relay too. */
+    fun cancelScheduled(item: ScheduledItem) = changeScheduled(item, "cancel") { Api.cancel(item.id); null }
+
+    /** "Dismiss" on a sent row: gone from this screen; the relay drops the item by itself after a day. */
+    fun dismissScheduled(item: ScheduledItem) { scheduledDismissed = scheduledDismissed + item.id }
 
     /**
      * One text send ended (from the composer, a row's "Send again", or a reply

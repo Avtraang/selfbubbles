@@ -237,8 +237,13 @@ fun Conversation(vm: ChatVM, t: Thread) {
     var attachPanel by remember { mutableStateOf(false) }
     // Nothing can be attached to an edit: the panel closes when edit mode starts and its button is off meanwhile.
     LaunchedEffect(edit != null) { if (edit != null) attachPanel = false }
-    // The effect picker (EffectPicker.kt), opened by a long press on Send in an iMessage chat.
+    // The send sheet (EffectPicker.kt), opened by a long press on Send: the effects in an iMessage chat,
+    // and "Send later" (SendLater.kt) in any chat when the relay offers it. That row opens the time
+    // chooser (SendLaterSheet.kt), as does a scheduled row's "Change time"; the open chat's scheduled
+    // texts show above the composer (ScheduledStrip). Never in edit mode: an edit is not a new message.
     var effectPicker by remember { mutableStateOf(false) }
+    val sendLater = Features.sendLater
+    var sendLaterFor by remember { mutableStateOf<SendLaterTarget?>(null) }
     val focusManager = LocalFocusManager.current
 
     // ---- search in this chat (InChatSearch.kt) ----
@@ -468,6 +473,20 @@ fun Conversation(vm: ChatVM, t: Thread) {
                     onCopy = { copyUnsentText(ctx, it.text) },
                     onDiscard = { vm.discardUnsent(it) },
                 )
+                // The texts the relay holds for later (SendLater.kt); empty on a relay without the feature.
+                ScheduledStrip(
+                    rows = vm.scheduledRows,
+                    onAction = { item, action ->
+                        when (action) {
+                            ScheduledRowAction.SEND_NOW, ScheduledRowAction.RETRY -> { vm.sendScheduledNow(item); Sfx.playSend(ctx) }
+                            // Asked first (ScheduledSendAnywayDialog below): a new send id may deliver the text twice.
+                            ScheduledRowAction.SEND_ANYWAY -> vm.askSendScheduledAnyway(item)
+                            ScheduledRowAction.CHANGE_TIME -> sendLaterFor = SendLaterTarget.Reschedule(item)
+                            ScheduledRowAction.CANCEL, ScheduledRowAction.DELETE -> vm.cancelScheduled(item)
+                            ScheduledRowAction.DISMISS -> vm.dismissScheduled(item)
+                        }
+                    },
+                )
                 // Edit mode's banner takes the reply banner's place: the reply target is stashed
                 // with the draft while a message is being edited (ChatVM.startEdit).
                 if (edit != null) EditBanner(edit, onCancel = { vm.cancelEdit(); settleComposer() })
@@ -606,13 +625,16 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 // leave as soon as they are picked, so typed text is the only thing that waits here.
                 // In edit mode the same button submits the edit (a check mark), and while the edit
                 // is on its way a spinner stands in its slot: the Mac may take twenty seconds over it.
-                if (edit?.sending == true) {
+                // The same spinner while a "Send later" request is on its way (ChatVM.scheduling): the
+                // field still holds the words until the relay has taken them, and a tap on Send then
+                // would deliver them now and the relay again at the chosen time.
+                if (edit?.sending == true || vm.scheduling) {
                     Box(
                         Modifier.minimumInteractiveComponentSize().size(Dimens.sendButton),
                         contentAlignment = Alignment.Center,
                     ) {
                         CircularProgressIndicator(
-                            Modifier.size(Dimens.iconSmall).semantics { contentDescription = "Saving edit" },
+                            Modifier.size(Dimens.iconSmall).semantics { contentDescription = if (edit != null) "Saving edit" else "Scheduling message" },
                             strokeWidth = Dimens.progressStroke,
                         )
                     }
@@ -622,9 +644,10 @@ fun Conversation(vm: ChatVM, t: Thread) {
                         if (edit != null) { vm.submitEdit(text); settleComposer() }
                         else if (text.isNotBlank()) { vm.send(text); input.clearText(); Sfx.playSend(ctx) }
                     },
-                    // A long press opens the effect picker (EffectPicker.kt): in an iMessage chat, never for an
-                    // edit. SMS/RCS and Google Messages have no effects, so there the button takes a tap only.
-                    onLongClick = if (edit == null && offersEffects(vm.current)) ({ effectPicker = true }) else null,
+                    // A long press opens the send sheet (EffectPicker.kt): the effects in an iMessage chat, "Send
+                    // later" in any chat the relay offers it for; never for an edit. A text thread on a relay
+                    // without Send later has nothing to offer, so there the button takes a tap only.
+                    onLongClick = if (edit == null && (offersEffects(vm.current) || sendLater)) ({ effectPicker = true }) else null,
                     enabled = if (edit != null) edit.canSubmit else hasText,
                     containerColor = if (textThread) msgColors.bubbleSms else msgColors.bubbleIMessage,
                     contentColor = if (textThread) msgColors.onBubbleSms else msgColors.onBubbleIMessage,
@@ -846,6 +869,36 @@ fun Conversation(vm: ChatVM, t: Thread) {
                 val text = input.text.toString()
                 if (text.isNotBlank()) { vm.send(text, effect); input.clearText(); Sfx.playSend(ctx) }
             },
+            effects = offersEffects(vm.current),
+            // The text as it is now goes with the chooser: what is typed while it is up is not part of it.
+            onSendLater = if (sendLater) ({
+                val text = input.text.toString()
+                if (text.isNotBlank()) { sendLaterFor = SendLaterTarget.NewText(text) }
+            }) else null,
+        )
+    }
+    sendLaterFor?.let { target ->
+        SendLaterChooser(
+            title = if (target is SendLaterTarget.Reschedule) "Send at a new time" else "Send later",
+            onDismiss = { sendLaterFor = null },
+            onPick = { at ->
+                when (target) {
+                    // The field clears once the relay has the text (ChatVM.scheduleText), and only if it still
+                    // holds that text: a word typed since is the owner's, as the unsent rows leave the field alone.
+                    is SendLaterTarget.NewText -> vm.scheduleText(target.text, at) { taken ->
+                        if (taken && input.text.toString() == target.text) input.clearText()
+                    }
+                    is SendLaterTarget.Reschedule -> vm.rescheduleScheduled(target.item, at)
+                }
+            },
+        )
+    }
+    // A failed scheduled text the relay cannot account for: Retry came back with that reason, or the row
+    // offered "Send anyway" straight off. The send sound plays on the confirmation, as for an unsent row.
+    vm.scheduledSendAnywayAsk?.let { item ->
+        ScheduledSendAnywayDialog(
+            onConfirm = { vm.sendScheduledAnyway(item); Sfx.playSend(ctx) },
+            onDismiss = { vm.dismissSendScheduledAnyway() },
         )
     }
 }
@@ -874,7 +927,7 @@ private fun SendButton(
             .background(if (enabled) containerColor else disabledContainerColor)
             .combinedClickable(
                 enabled = enabled, role = Role.Button,
-                onLongClickLabel = onLongClick?.let { "Send with an effect" }, onLongClick = onLongClick,
+                onLongClickLabel = onLongClick?.let { "More ways to send" }, onLongClick = onLongClick,
                 onClick = onClick,
             ),
         contentAlignment = Alignment.Center,
